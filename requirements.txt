@@ -1,0 +1,12 @@
+requirements_txt
+fastapi
+uvicorn[standard]
+twilio
+pydantic
+python-dotenv
+redis
+aioredis
+loguru
+httpx
+python-multipart
+jinja2
