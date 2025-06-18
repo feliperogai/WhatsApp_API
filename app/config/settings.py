@@ -1,4 +1,3 @@
-settings_py = ""
 from pydantic_settings import BaseSettings
 from typing import Optional
 import os

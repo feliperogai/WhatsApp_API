@@ -1,5 +1,5 @@
 version: "2"
-authtoken: YOUR_NGROK_AUTH_TOKEN
+authtoken: 2kLiFumK1O1hMYTs8cXwBwFA4NQ_7SVUf5dgTVFFGdXUEP7j5
 tunnels:
   jarvis-webhook:
     addr: jarvis-whatsapp:8000
