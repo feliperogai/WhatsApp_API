@@ -28,15 +28,6 @@ cd whatsapp_agent_orchestrator
 cp .env.example .env
 ```
 
-### 2. Configure suas credenciais no .env
-
-```env
-TWILIO_ACCOUNT_SID=AC1c9d31b427c19abdf4f607c9aa74d144
-TWILIO_AUTH_TOKEN=a8ed455b4153b003caa10a584ec7b330
-TWILIO_PHONE_NUMBER=+14155238886
-WEBHOOK_BASE_URL=https://your-ngrok-url.ngrok.io
-```
-
 ### 3. Rode com Docker
 
 ```bash
