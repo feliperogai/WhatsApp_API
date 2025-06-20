@@ -30,18 +30,32 @@ class LLMService:
     
     async def _test_ollama_connection(self):
         """Testa conexão com Ollama usando configuração exata"""
-        url = f"{self.ollama_url}/api/chat"
-        test_payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": "teste"}]
-        }
-        
-        async with self.session.post(url, json=test_payload) as response:
-            if response.status != 200:
-                raise Exception(f"Ollama connection failed: {response.status}")
-            result = await response.json()
-            if "message" not in result:
-                raise Exception("Invalid response format from Ollama")
+        try:
+            # Primeiro tenta um endpoint simples
+            async with self.session.get(f"{self.ollama_url}/api/tags") as response:
+                if response.status != 200:
+                    raise Exception(f"Ollama tags endpoint failed: {response.status}")
+            
+            # Depois testa o chat
+            url = f"{self.ollama_url}/api/chat"
+            test_payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": "teste"}],
+                "stream": False
+            }
+            
+            async with self.session.post(url, json=test_payload) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise Exception(f"Ollama chat failed: {response.status} - {text}")
+                
+                result = await response.json()
+                if "message" not in result:
+                    raise Exception(f"Invalid response format: {result}")
+                    
+        except Exception as e:
+            logger.error(f"Ollama test failed: {e}")
+            raise
     
     def get_memory(self, session_id: str) -> List[Dict]:
         """Obtém ou cria memória para sessão"""
@@ -83,14 +97,23 @@ class LLMService:
             url = f"{self.ollama_url}/api/chat"
             payload = {
                 "model": self.model,
-                "messages": messages
+                "messages": messages,
+                "stream": False
             }
             
             async with self.session.post(url, json=payload) as response:
                 if response.status != 200:
-                    raise Exception(f"Ollama API error: {response.status}")
+                    text = await response.text()
+                    raise Exception(f"Ollama API error: {response.status} - {text}")
                 
                 result = await response.json()
+                
+                if "error" in result:
+                    raise Exception(f"Ollama error: {result['error']}")
+                
+                if "message" not in result or "content" not in result["message"]:
+                    raise Exception(f"Invalid response format: {result}")
+                
                 content = result["message"]["content"]
                 
                 # Salva na memória

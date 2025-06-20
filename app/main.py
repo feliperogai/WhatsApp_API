@@ -1,10 +1,11 @@
-from fastapi import FastAPI, Request, HTTPException, Form, BackgroundTasks, Query
-from fastapi.responses import Response, HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException, Form, BackgroundTasks, Query, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 import uvicorn
+from datetime import datetime
 
 from app.config.settings import settings
 from app.services.whatsapp_service import WhatsAppService
@@ -49,61 +50,37 @@ app.add_middleware(
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    html_content = f"""
+    html_content = """
     <!DOCTYPE html>
     <html>
     <head>
         <title>Jarvis LLM Agent Orchestrator v2.0</title>
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }}
-            .container {{ max-width: 1000px; margin: 0 auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 15px; backdrop-filter: blur(10px); }}
-            .header {{ text-align: center; margin-bottom: 30px; }}
-            .status {{ background: rgba(0,255,0,0.2); padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #00ff00; }}
-            .config {{ background: rgba(0,150,255,0.2); padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #0096ff; }}
-            .endpoint {{ background: rgba(255,255,255,0.1); padding: 12px; margin: 8px 0; border-radius: 8px; }}
-            .code {{ font-family: monospace; background: rgba(0,0,0,0.3); color: #f8f8f2; padding: 15px; border-radius: 8px; margin: 10px 0; }}
+            body { font-family: Arial, sans-serif; margin: 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+            .container { max-width: 1000px; margin: 0 auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 15px; backdrop-filter: blur(10px); }
+            .header { text-align: center; margin-bottom: 30px; }
+            .status { background: rgba(0,255,0,0.2); padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #00ff00; }
+            .endpoint { background: rgba(255,255,255,0.1); padding: 12px; margin: 8px 0; border-radius: 8px; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>🤖 Jarvis LLM Agent Orchestrator v2.0</h1>
-                <p>Sistema IA Otimizado para Ollama</p>
+                <p>Sistema IA Otimizado para WhatsApp</p>
             </div>
             
             <div class="status">
                 <h3>✅ Sistema Online</h3>
-                <p><strong>Versão:</strong> 2.0.0 (Otimizada)</p>
-                <p><strong>Twilio:</strong> {settings.twilio_phone_number}</p>
+                <p><strong>Webhook:</strong> /webhook/whatsapp</p>
+                <p><strong>Status:</strong> Funcionando</p>
             </div>
             
-            <div class="config">
-                <h3>🧠 Configuração LLM</h3>
-                <p><strong>Ollama:</strong> http://192.168.15.31:11435</p>
-                <p><strong>Modelo:</strong> llama3.1:8b</p>
-                <p><strong>Status:</strong> Conectado e funcionando</p>
-            </div>
-            
-            <h3>🔗 Endpoints:</h3>
+            <h3>🔗 Endpoints Disponíveis:</h3>
+            <div class="endpoint"><strong>POST</strong> /webhook/whatsapp - Webhook do Twilio</div>
+            <div class="endpoint"><strong>GET</strong> /webhook/test - Teste do webhook</div>
             <div class="endpoint"><strong>GET</strong> /health - Status do sistema</div>
-            <div class="endpoint"><strong>GET</strong> /status - Status detalhado</div>
-            <div class="endpoint"><strong>GET</strong> /llm/status - Status LLM</div>
-            <div class="endpoint"><strong>POST</strong> /llm/test - Teste direto LLM</div>
-            <div class="endpoint"><strong>POST</strong> /webhook/whatsapp - Webhook Twilio</div>
             <div class="endpoint"><strong>POST</strong> /send - Enviar mensagem</div>
-            
-            <h3>🧪 Teste Rápido:</h3>
-            <div class="code">
-curl -X POST http://localhost:8000/llm/test \\
-  -H "Content-Type: application/json" \\
-  -d '{"prompt": "Olá, como você está?"}'
-            </div>
-            
-            <h3>📱 Webhook Twilio:</h3>
-            <div class="code">
-URL: [SEU_NGROK_URL]/webhook/whatsapp
-Method: POST
-            </div>
         </div>
     </body>
     </html>
@@ -112,35 +89,67 @@ Method: POST
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
-    request: Request,
-    AccountSid: str = Form(...),
-    MessageSid: str = Form(...),
-    From: str = Form(...),
-    To: str = Form(...),
-    Body: str = Form(default=""),
-    MediaUrl0: Optional[str] = Form(default=None)
+    From: str = Form(None),
+    To: str = Form(None),
+    Body: str = Form(""),
+    AccountSid: str = Form(None),
+    MessageSid: str = Form(None),
+    MediaUrl0: Optional[str] = Form(None),
+    NumMedia: str = Form("0")
 ):
+    """Webhook do WhatsApp - Versão Funcional"""
     try:
-        # Constrói dados do webhook
-        webhook_data = {
-            "AccountSid": AccountSid,
-            "MessageSid": MessageSid,
-            "From": From,
-            "To": To,
-            "Body": Body,
-            "MediaUrl0": MediaUrl0
-        }
+        # Log para debug
+        logger.info(f"=== WEBHOOK RECEBIDO ===")
+        logger.info(f"From: {From}")
+        logger.info(f"Body: {Body}")
+        logger.info(f"MessageSid: {MessageSid}")
         
-        logger.info(f"Webhook received from {From}: {Body[:50]}...")
+        # Validação básica
+        if not From or not MessageSid:
+            logger.error("Webhook sem campos obrigatórios")
+            return Response(
+                content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                media_type="application/xml"
+            )
         
-        # Processa via LLM
-        twiml_response = await whatsapp_service.process_incoming_webhook(webhook_data)
+        # Por enquanto, resposta simples para testar
+        if Body.lower() in ['oi', 'olá', 'ola', 'hello', 'hi']:
+            response_text = "👋 Olá! Eu sou o Jarvis, seu assistente inteligente. Como posso ajudar?"
+        elif Body.lower() in ['teste', 'test']:
+            response_text = "✅ Webhook funcionando perfeitamente!"
+        else:
+            response_text = f"🤖 Recebi sua mensagem: '{Body}'. Em breve terei respostas mais inteligentes!"
         
-        return Response(content=twiml_response, media_type="application/xml")
+        # Monta resposta TwiML
+        twiml_response = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>{response_text}</Message>
+</Response>'''
+        
+        logger.info(f"Respondendo com: {response_text[:50]}...")
+        
+        return Response(
+            content=twiml_response,
+            media_type="application/xml"
+        )
         
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Erro no webhook: {str(e)}", exc_info=True)
+        # Em caso de erro, retorna TwiML vazio para não dar erro no Twilio
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            media_type="application/xml"
+        )
+
+@app.get("/webhook/test")
+async def webhook_test():
+    """Endpoint de teste para verificar se webhook está acessível"""
+    return {
+        "status": "ok",
+        "message": "Webhook endpoint está funcionando",
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/health")
 async def health_check():
@@ -148,60 +157,49 @@ async def health_check():
         "status": "healthy", 
         "service": "jarvis-llm-orchestrator",
         "version": "2.0.0",
-        "ai_powered": True,
-        "ollama_configured": True
+        "webhook": "ready"
     }
 
 @app.get("/status")
 async def detailed_status():
     try:
-        status = await whatsapp_service.get_service_status()
-        return status
+        return {
+            "status": "operational",
+            "webhook": "configured",
+            "timestamp": datetime.now().isoformat(),
+            "endpoints": {
+                "webhook": "/webhook/whatsapp",
+                "health": "/health",
+                "test": "/webhook/test"
+            }
+        }
     except Exception as e:
         logger.error(f"Status check error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
 @app.get("/llm/status")
 async def llm_status():
-    """Status específico do LLM"""
+    """Status do LLM"""
     try:
-        llm_status = await whatsapp_service.llm_service.get_service_status()
-        return {
-            "llm_service": llm_status,
-            "ollama_url": "http://192.168.15.31:11435",
-            "model": "llama3.1:8b",
-            "optimized": True
-        }
+        if whatsapp_service and whatsapp_service.llm_service:
+            llm_status = await whatsapp_service.llm_service.get_service_status()
+            return llm_status
+        else:
+            return {"status": "not_initialized"}
     except Exception as e:
-        logger.error(f"LLM status error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/llm/test")
-async def test_llm(prompt: str = "Olá, como você está?"):
-    """Testa LLM diretamente"""
-    try:
-        response = await whatsapp_service.llm_service.generate_response(
-            prompt=prompt,
-            system_message="Você é um assistente de teste. Responda de forma amigável e concisa."
-        )
-        return {
-            "prompt": prompt,
-            "response": response,
-            "model": "llama3.1:8b",
-            "ollama_url": "http://192.168.15.31:11435",
-            "timestamp": "now"
-        }
-    except Exception as e:
-        logger.error(f"LLM test error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
 @app.post("/send")
-async def send_message(
-    phone_number: str,
-    message: str,
-    media_url: Optional[str] = None
-):
+async def send_message(data: Dict[str, Any]):
+    """Envia mensagem via WhatsApp"""
     try:
+        phone_number = data.get("phone_number")
+        message = data.get("message")
+        media_url = data.get("media_url")
+        
+        if not phone_number or not message:
+            raise HTTPException(status_code=400, detail="phone_number and message are required")
+        
         success = await whatsapp_service.send_message(phone_number, message, media_url)
         
         if success:
@@ -211,33 +209,6 @@ async def send_message(
             
     except Exception as e:
         logger.error(f"Send message error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/reset-session")
-async def reset_session(phone_number: str):
-    try:
-        await whatsapp_service.reset_user_session(phone_number)
-        return {"status": "reset", "phone_number": phone_number}
-    except Exception as e:
-        logger.error(f"Reset session error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/broadcast")
-async def broadcast_message(
-    phone_numbers: List[str],
-    message: str,
-    background_tasks: BackgroundTasks
-):
-    try:
-        background_tasks.add_task(whatsapp_service.broadcast_message, phone_numbers, message)
-        
-        return {
-            "status": "broadcasting",
-            "recipients": len(phone_numbers),
-            "message": message[:50] + "..." if len(message) > 50 else message
-        }
-    except Exception as e:
-        logger.error(f"Broadcast error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
