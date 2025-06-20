@@ -34,5 +34,18 @@ class LLMSettings(BaseSettings):
     
     class Config:
         env_file = ".env"
+        extra = "ignore"  # IMPORTANTE: Ignora campos extras do .env
+        env_prefix = ""   # Não usa prefixo
 
-llm_settings = LLMSettings()
+# Cria instância com valores já carregados
+llm_settings = LLMSettings(
+    ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://192.168.15.31:11435"),
+    ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+    openai_api_key=os.getenv("OPENAI_API_KEY", None),
+    openai_model=os.getenv("OPENAI_MODEL", "gpt-4"),
+    temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+    max_tokens=int(os.getenv("LLM_MAX_TOKENS", "500")),
+    timeout=int(os.getenv("LLM_TIMEOUT", "30")),
+    agent_memory_size=int(os.getenv("AGENT_MEMORY_SIZE", "10")),
+    context_window=int(os.getenv("CONTEXT_WINDOW", "4000"))
+)

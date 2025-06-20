@@ -7,34 +7,54 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Sistema
       - ENVIRONMENT=development
       - DEBUG=True
       - REDIS_URL=redis://redis:6379/0
+      
+      # Twilio
       - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
       - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
       - WEBHOOK_BASE_URL=${WEBHOOK_BASE_URL}
-      # LLM Configuration - Usa seu Ollama externo
+      
+      # LLM Configuration - IMPORTANTE: Seu Ollama externo
       - OLLAMA_BASE_URL=http://192.168.15.31:11435
       - OLLAMA_MODEL=llama3.1:8b
       - LLM_TEMPERATURE=0.7
       - LLM_MAX_TOKENS=500
+      - LLM_TIMEOUT=30
       - AGENT_MEMORY_SIZE=10
+      - CONTEXT_WINDOW=4000
+      
+      # OpenAI (opcional - fallback)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      
     volumes:
       - ./logs:/app/logs
-      - ./.env:/app/.env
+      - ./.env:/app/.env:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
-    # Conecta na rede do host para acessar Ollama externo
+      start_period: 40s
+    networks:
+      - jarvis-network
+    # Importante: permite acesso ao Ollama externo
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Recursos recomendados
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
 
   # Redis para sessões
   redis:
@@ -50,17 +70,16 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - jarvis-network
 
-  # Ngrok para webhook (opcional)
+  # Ngrok para webhook (opcional - desenvolvimento)
   ngrok:
     image: ngrok/ngrok:latest
     command: 
-      - "start"
-      - "--all"
-      - "--config"
-      - "/etc/ngrok.yml"
-    volumes:
-      - ./ngrok.yml:/etc/ngrok.yml
+      - "http"
+      - "jarvis-whatsapp-llm:8000"
+      - "--log-level=info"
     ports:
       - "4040:4040"
     environment:
@@ -68,6 +87,8 @@ services:
     depends_on:
       - jarvis-whatsapp-llm
     restart: unless-stopped
+    networks:
+      - jarvis-network
     profiles:
       - ngrok  # Use: docker-compose --profile ngrok up
 
@@ -76,5 +97,9 @@ volumes:
     driver: local
 
 networks:
-  default:
+  jarvis-network:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16

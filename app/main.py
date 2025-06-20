@@ -73,13 +73,17 @@ async def root():
             <div class="status">
                 <h3>✅ Sistema Online</h3>
                 <p><strong>Webhook:</strong> /webhook/whatsapp</p>
-                <p><strong>Status:</strong> Funcionando</p>
+                <p><strong>Status:</strong> Funcionando com LLM</p>
+                <p><strong>Ollama:</strong> http://192.168.15.31:11435</p>
             </div>
             
             <h3>🔗 Endpoints Disponíveis:</h3>
-            <div class="endpoint"><strong>POST</strong> /webhook/whatsapp - Webhook do Twilio</div>
+            <div class="endpoint"><strong>POST</strong> /webhook/whatsapp - Webhook do Twilio (LLM Integrado)</div>
             <div class="endpoint"><strong>GET</strong> /webhook/test - Teste do webhook</div>
             <div class="endpoint"><strong>GET</strong> /health - Status do sistema</div>
+            <div class="endpoint"><strong>GET</strong> /status - Status detalhado</div>
+            <div class="endpoint"><strong>GET</strong> /llm/status - Status do LLM</div>
+            <div class="endpoint"><strong>POST</strong> /llm/test - Teste direto do LLM</div>
             <div class="endpoint"><strong>POST</strong> /send - Enviar mensagem</div>
         </div>
     </body>
@@ -97,7 +101,7 @@ async def whatsapp_webhook(
     MediaUrl0: Optional[str] = Form(None),
     NumMedia: str = Form("0")
 ):
-    """Webhook do WhatsApp - Versão Funcional"""
+    """Webhook do WhatsApp - Integrado com LLM"""
     try:
         # Log para debug
         logger.info(f"=== WEBHOOK RECEBIDO ===")
@@ -113,32 +117,42 @@ async def whatsapp_webhook(
                 media_type="application/xml"
             )
         
-        # Por enquanto, resposta simples para testar
-        if Body.lower() in ['oi', 'olá', 'ola', 'hello', 'hi']:
-            response_text = "👋 Olá! Eu sou o Jarvis, seu assistente inteligente. Como posso ajudar?"
-        elif Body.lower() in ['teste', 'test']:
-            response_text = "✅ Webhook funcionando perfeitamente!"
+        # Monta dados do webhook
+        webhook_data = {
+            'From': From,
+            'To': To,
+            'Body': Body,
+            'MessageSid': MessageSid,
+            'AccountSid': AccountSid,
+            'MediaUrl0': MediaUrl0,
+            'NumMedia': NumMedia
+        }
+        
+        # IMPORTANTE: Usa o WhatsApp Service com LLM
+        if whatsapp_service:
+            logger.info("Processando mensagem com LLM...")
+            twiml_response = await whatsapp_service.process_incoming_webhook(webhook_data)
+            logger.info("Resposta LLM gerada com sucesso")
+            return Response(
+                content=twiml_response,
+                media_type="application/xml"
+            )
         else:
-            response_text = f"🤖 Recebi sua mensagem: '{Body}'. Em breve terei respostas mais inteligentes!"
-        
-        # Monta resposta TwiML
-        twiml_response = f'''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>{response_text}</Message>
-</Response>'''
-        
-        logger.info(f"Respondendo com: {response_text[:50]}...")
-        
-        return Response(
-            content=twiml_response,
-            media_type="application/xml"
-        )
+            logger.error("WhatsApp service não inicializado")
+            return Response(
+                content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Sistema temporariamente indisponível</Message></Response>',
+                media_type="application/xml"
+            )
         
     except Exception as e:
         logger.error(f"Erro no webhook: {str(e)}", exc_info=True)
-        # Em caso de erro, retorna TwiML vazio para não dar erro no Twilio
+        # Em caso de erro, retorna mensagem de erro amigável
+        error_response = '''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>🤖 Ops! Tive um problema temporário. Por favor, tente novamente em alguns instantes.</Message>
+</Response>'''
         return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            content=error_response,
             media_type="application/xml"
         )
 
@@ -148,46 +162,91 @@ async def webhook_test():
     return {
         "status": "ok",
         "message": "Webhook endpoint está funcionando",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "llm_integrated": True
     }
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy", 
-        "service": "jarvis-llm-orchestrator",
-        "version": "2.0.0",
-        "webhook": "ready"
-    }
+    """Health check do sistema"""
+    try:
+        health_status = {
+            "status": "healthy", 
+            "service": "jarvis-llm-orchestrator",
+            "version": "2.0.0",
+            "webhook": "ready",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Verifica status do LLM se disponível
+        if whatsapp_service and hasattr(whatsapp_service, 'llm_service'):
+            try:
+                llm_status = await whatsapp_service.llm_service.get_service_status()
+                health_status["llm"] = llm_status.get("status", "unknown")
+            except:
+                health_status["llm"] = "error"
+        
+        return health_status
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return {"status": "unhealthy", "error": str(e)}
 
 @app.get("/status")
 async def detailed_status():
+    """Status detalhado do sistema"""
     try:
-        return {
-            "status": "operational",
-            "webhook": "configured",
-            "timestamp": datetime.now().isoformat(),
-            "endpoints": {
-                "webhook": "/webhook/whatsapp",
-                "health": "/health",
-                "test": "/webhook/test"
+        if whatsapp_service:
+            return await whatsapp_service.get_service_status()
+        else:
+            return {
+                "status": "initializing",
+                "message": "Service is starting up",
+                "timestamp": datetime.now().isoformat()
             }
-        }
     except Exception as e:
         logger.error(f"Status check error: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/llm/status")
 async def llm_status():
-    """Status do LLM"""
+    """Status específico do LLM"""
     try:
         if whatsapp_service and whatsapp_service.llm_service:
             llm_status = await whatsapp_service.llm_service.get_service_status()
             return llm_status
         else:
-            return {"status": "not_initialized"}
+            return {"status": "not_initialized", "message": "LLM service not ready"}
     except Exception as e:
+        logger.error(f"LLM status error: {e}")
         return {"status": "error", "message": str(e)}
+
+@app.post("/llm/test")
+async def test_llm(data: Dict[str, Any]):
+    """Teste direto do LLM"""
+    try:
+        prompt = data.get("prompt", "Olá, teste do LLM")
+        
+        if not whatsapp_service or not whatsapp_service.llm_service:
+            raise HTTPException(status_code=503, detail="LLM service not available")
+        
+        # Gera resposta usando LLM
+        response = await whatsapp_service.llm_service.generate_response(
+            prompt=prompt,
+            system_message="Você é o Jarvis, um assistente inteligente. Responda de forma concisa e amigável.",
+            session_id="test_session"
+        )
+        
+        return {
+            "prompt": prompt,
+            "response": response,
+            "model": whatsapp_service.llm_service.model,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"LLM test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/send")
 async def send_message(data: Dict[str, Any]):
@@ -200,6 +259,9 @@ async def send_message(data: Dict[str, Any]):
         if not phone_number or not message:
             raise HTTPException(status_code=400, detail="phone_number and message are required")
         
+        if not whatsapp_service:
+            raise HTTPException(status_code=503, detail="WhatsApp service not available")
+        
         success = await whatsapp_service.send_message(phone_number, message, media_url)
         
         if success:
@@ -209,6 +271,69 @@ async def send_message(data: Dict[str, Any]):
             
     except Exception as e:
         logger.error(f"Send message error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/reset-session")
+async def reset_session(data: Dict[str, Any]):
+    """Reseta sessão de um usuário"""
+    try:
+        phone_number = data.get("phone_number")
+        
+        if not phone_number:
+            raise HTTPException(status_code=400, detail="phone_number is required")
+        
+        if not whatsapp_service:
+            raise HTTPException(status_code=503, detail="WhatsApp service not available")
+        
+        await whatsapp_service.reset_user_session(phone_number)
+        
+        return {"status": "success", "message": f"Session reset for {phone_number}"}
+        
+    except Exception as e:
+        logger.error(f"Reset session error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/analyze/{phone_number}")
+async def analyze_conversation(phone_number: str):
+    """Analisa conversa de um usuário usando LLM"""
+    try:
+        if not whatsapp_service:
+            raise HTTPException(status_code=503, detail="WhatsApp service not available")
+        
+        analysis = await whatsapp_service.analyze_conversation(phone_number)
+        
+        return analysis
+        
+    except Exception as e:
+        logger.error(f"Analysis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/suggestions/{phone_number}")
+async def get_suggestions(phone_number: str, context: str = Query("general")):
+    """Obtém sugestões inteligentes para próxima interação"""
+    try:
+        if not whatsapp_service or not whatsapp_service.llm_service:
+            raise HTTPException(status_code=503, detail="Service not available")
+        
+        # Gera sugestões usando LLM
+        prompt = f"""Baseado no contexto '{context}' para o usuário {phone_number}, 
+        sugira 3 ações ou perguntas relevantes para melhorar a experiência."""
+        
+        suggestions = await whatsapp_service.llm_service.generate_response(
+            prompt=prompt,
+            system_message="Você é um especialista em customer experience. Forneça sugestões práticas e relevantes.",
+            session_id=f"suggestions_{phone_number}"
+        )
+        
+        return {
+            "phone_number": phone_number,
+            "context": context,
+            "suggestions": suggestions,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Suggestions error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
