@@ -1,7 +1,9 @@
-
 services:
-  jarvis-whatsapp:
-    build: .
+  # Aplicação principal Jarvis LLM
+  jarvis-whatsapp-llm:
+    build: 
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -12,13 +14,29 @@ services:
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
       - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
       - WEBHOOK_BASE_URL=${WEBHOOK_BASE_URL}
+      # LLM Configuration - Usa seu Ollama externo
+      - OLLAMA_BASE_URL=http://192.168.15.31:11435
+      - OLLAMA_MODEL=llama3.1:8b
+      - LLM_TEMPERATURE=0.7
+      - LLM_MAX_TOKENS=500
+      - AGENT_MEMORY_SIZE=10
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env
     depends_on:
       - redis
     restart: unless-stopped
-    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Conecta na rede do host para acessar Ollama externo
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Redis para sessões
   redis:
     image: redis:7-alpine
     ports:
@@ -26,8 +44,14 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
+  # Ngrok para webhook (opcional)
   ngrok:
     image: ngrok/ngrok:latest
     command: 
@@ -40,9 +64,17 @@ services:
     ports:
       - "4040:4040"
     environment:
-      - NGROK_AUTHTOKEN=2kLiFumK1O1hMYTs8cXwBwFA4NQ_7SVUf5dgTVFFGdXUEP7j5
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
     depends_on:
-      - jarvis-whatsapp
+      - jarvis-whatsapp-llm
+    restart: unless-stopped
+    profiles:
+      - ngrok  # Use: docker-compose --profile ngrok up
 
 volumes:
   redis_data:
+    driver: local
+
+networks:
+  default:
+    driver: bridge

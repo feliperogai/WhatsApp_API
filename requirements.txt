@@ -1,12 +1,27 @@
+# === CORE ===
 fastapi
 uvicorn[standard]
-twilio
 pydantic
 pydantic-settings
-python-dotenv
-redis
-aioredis
-loguru
-httpx
+
+# === WHATSAPP ===
+twilio
 python-multipart
+
+# === LLM & AI ===
+langchain
+langchain-core
+langchain-community
+langgraph
+
+# === HTTP & ASYNC ===
+aiohttp
+httpx
+
+# === CACHE ===
+redis
+
+# === UTILITIES ===
+python-dotenv
+loguru
 jinja2
