@@ -1,94 +1,4 @@
 services:
-  # ===========================
-  # APLICAÇÃO PRINCIPAL JARVIS
-  # ===========================
-  jarvis-whatsapp:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    container_name: jarvis-whatsapp-queue
-    image: jarvis-whatsapp:v2.1-queue
-    ports:
-      - "8000:8000"
-    environment:
-      # === Sistema ===
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - DEBUG=${DEBUG:-False}
-      - HOST=0.0.0.0
-      - PORT=8000
-      
-      # === Redis ===
-      - REDIS_URL=redis://redis:6379/0
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-jarvis_secure_password_2024}
-      
-      # === Twilio ===
-      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
-      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
-      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
-      - WEBHOOK_BASE_URL=${WEBHOOK_BASE_URL}
-      
-      # === LLM Configuration ===
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://192.168.15.31:11435}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-500}
-      - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
-      - AGENT_MEMORY_SIZE=${AGENT_MEMORY_SIZE:-10}
-      - CONTEXT_WINDOW=${CONTEXT_WINDOW:-4000}
-      
-      # === Queue Configuration ===
-      - QUEUE_MAX_SIZE=${QUEUE_MAX_SIZE:-1000}
-      - MAX_CONCURRENT_LLM=${MAX_CONCURRENT_LLM:-3}
-      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-5}
-      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
-      - CIRCUIT_BREAKER_THRESHOLD=${CIRCUIT_BREAKER_THRESHOLD:-3}
-      - CIRCUIT_BREAKER_TIMEOUT=${CIRCUIT_BREAKER_TIMEOUT:-30}
-      
-      # === Cache Configuration ===
-      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
-      - CACHE_MAX_SIZE=${CACHE_MAX_SIZE:-1000}
-      - CACHE_SIMILARITY_THRESHOLD=${CACHE_SIMILARITY_THRESHOLD:-0.9}
-      
-      # === Monitoring ===
-      - ENABLE_MONITORING=${ENABLE_MONITORING:-True}
-      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
-      - ADMIN_PHONES=${ADMIN_PHONES:-}
-      
-    volumes:
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
-      - ./app:/app/app:ro  # Código como read-only em produção
-    depends_on:
-      redis:
-        condition: service_healthy
-      ollama:
-        condition: service_started
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    networks:
-      - jarvis-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # Para acessar Ollama externo
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 3G
-        reservations:
-          cpus: '1'
-          memory: 1G
-    labels:
-      - "com.jarvis.version=2.1"
-      - "com.jarvis.component=main"
-
-  # ===========================
-  # REDIS (QUEUE + CACHE + SESSIONS)
-  # ===========================
   redis:
     image: redis:7-alpine
     container_name: jarvis-redis
@@ -96,210 +6,59 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
-    environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-jarvis_secure_password_2024}
-    command: redis-server /usr/local/etc/redis/redis.conf --requirepass ${REDIS_PASSWORD:-jarvis_secure_password_2024}
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-jarvis_secure_password_2024}", "ping"]
-      interval: 30s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
       timeout: 5s
+      retries: 5
+
+  jarvis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jarvis-whatsapp
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 30s
-    networks:
-      - jarvis-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    labels:
-      - "com.jarvis.component=cache"
-
-  # ===========================
-  # OLLAMA (LLM LOCAL) - OPCIONAL
-  # ===========================
-  # Descomente se quiser rodar Ollama localmente ao invés de usar externo
-  ollama:
-    image: ollama/ollama:latest
-    container_name: jarvis-ollama
-    profiles:
-      - local-llm  # Só inicia se usar: docker-compose --profile local-llm up
-    ports:
-      - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_MODELS=${OLLAMA_MODELS:-llama3.1:8b,qwen2.5:7b}
-    restart: unless-stopped
+      - ./logs:/app/logs
     networks:
       - jarvis-network
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 16G
-        reservations:
-          cpus: '2'
-          memory: 8G
-    command: serve
-    labels:
-      - "com.jarvis.component=llm"
 
-  # ===========================
-  # NGROK (DESENVOLVIMENTO)
-  # ===========================
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: jarvis-ngrok
-    profiles:
-      - dev  # Use: docker-compose --profile dev up
-    command: 
-      - "http"
-      - "jarvis-whatsapp:8000"
-      - "--domain=${NGROK_DOMAIN:-}"
-      - "--log-level=info"
-    ports:
-      - "4040:4040"  # Interface web do ngrok
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
-    depends_on:
-      - jarvis-whatsapp
-    restart: unless-stopped
-    networks:
-      - jarvis-network
-    labels:
-      - "com.jarvis.component=tunnel"
-
-  # ===========================
-  # REDIS COMMANDER (MONITORAMENTO)
-  # ===========================
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: jarvis-redis-commander
-    profiles:
-      - monitoring  # Use: docker-compose --profile monitoring up
-    ports:
-      - "8081:8081"
-    environment:
-      - REDIS_HOSTS=redis:redis:6379:0:${REDIS_PASSWORD:-jarvis_secure_password_2024}
-      - HTTP_USER=${REDIS_COMMANDER_USER:-admin}
-      - HTTP_PASSWORD=${REDIS_COMMANDER_PASSWORD:-jarvis123}
-    depends_on:
-      - redis
-    restart: unless-stopped
-    networks:
-      - jarvis-network
-    labels:
-      - "com.jarvis.component=monitoring"
-
-  # ===========================
-  # PROMETHEUS (MÉTRICAS)
-  # ===========================
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: jarvis-prometheus
-    profiles:
-      - monitoring
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=30d'
-    depends_on:
-      - jarvis-whatsapp
-    restart: unless-stopped
-    networks:
-      - jarvis-network
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 1G
-    labels:
-      - "com.jarvis.component=metrics"
-
-  # ===========================
-  # GRAFANA (DASHBOARDS)
-  # ===========================
-  grafana:
-    image: grafana/grafana:latest
-    container_name: jarvis-grafana
-    profiles:
-      - monitoring
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-jarvis123}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:3000
-      - GF_SMTP_ENABLED=false
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on:
-      - prometheus
-    restart: unless-stopped
-    networks:
-      - jarvis-network
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    labels:
-      - "com.jarvis.component=dashboards"
-
-  # ===========================
-  # BACKUP SERVICE (OPCIONAL)
-  # ===========================
-  backup:
-    image: offen/docker-volume-backup:latest
-    container_name: jarvis-backup
-    profiles:
-      - backup  # Use: docker-compose --profile backup up
-    environment:
-      - BACKUP_SOURCES=/backup/redis,/backup/logs
-      - BACKUP_CRON_EXPRESSION=0 2 * * *  # Diariamente às 2h
-      - BACKUP_RETENTION_DAYS=7
-      - BACKUP_FILENAME_PREFIX=jarvis-backup-
-    volumes:
-      - redis_data:/backup/redis:ro
-      - ./logs:/backup/logs:ro
-      - ./backups:/archive
-    restart: unless-stopped
-    networks:
-      - jarvis-network
-    labels:
-      - "com.jarvis.component=backup"
+  # Optional: Ollama local (uncomment if needed)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: jarvis-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0
+  #   restart: unless-stopped
+  #   command: serve
+  #   networks:
+  #     - jarvis-network
 
 volumes:
   redis_data:
-    driver: local
-  ollama_data:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
+  # ollama_data:
 
 networks:
   jarvis-network:
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.20.0.0/16
