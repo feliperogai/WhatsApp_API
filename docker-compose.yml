@@ -28,7 +28,7 @@ services:
       - PYTHONUNBUFFERED=1
       # Configurações LLM
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://192.168.15.31:11435}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:latest}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-500}
       - LLM_TIMEOUT=${LLM_TIMEOUT:-30}

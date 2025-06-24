@@ -8,7 +8,7 @@ load_dotenv()
 class LLMSettings(BaseSettings):
     # Ollama Configuration
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://192.168.15.31:11435")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3:latest")
     
     # OpenAI Configuration (fallback)
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY", None)
@@ -40,7 +40,7 @@ class LLMSettings(BaseSettings):
 # Cria instância com valores já carregados
 llm_settings = LLMSettings(
     ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://192.168.15.31:11435"),
-    ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+    ollama_model=os.getenv("OLLAMA_MODEL", "llama3:latest"),
     openai_api_key=os.getenv("OPENAI_API_KEY", None),
     openai_model=os.getenv("OPENAI_MODEL", "gpt-4"),
     temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
