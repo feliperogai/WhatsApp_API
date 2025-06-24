@@ -101,8 +101,10 @@ class LangGraphOrchestrator:
     async def process_message(self, message: WhatsAppMessage) -> AgentResponse:
         """Processa mensagem através do LangGraph"""
         try:
-            # Obtém ou cria sessão
+            # Obtém ou cria sessão - IMPORTANTE: a sessão é criada aqui, não passada como parâmetro
             session = await self.session_manager.get_or_create_session(message.from_number)
+            
+            logger.info(f"Processing message for session: {session.session_id}")
             
             # Prepara estado inicial
             initial_state = ConversationState(
@@ -119,31 +121,34 @@ class LangGraphOrchestrator:
             )
             
             # Executa workflow
+            logger.info("Invoking LangGraph workflow...")
             final_state = await self.workflow.ainvoke(initial_state)
+            
+            logger.info(f"Workflow completed. Agent response: {final_state.get('agent_response', {})}")
             
             # Constrói resposta
             response = AgentResponse(
-                agent_id=final_state["current_agent"],
-                response_text=final_state["agent_response"].get("text", "Erro interno"),
-                confidence=final_state["agent_response"].get("confidence", 0.0),
-                should_continue=not final_state["conversation_complete"],
-                next_agent=final_state["agent_response"].get("next_agent"),
-                metadata=final_state["agent_response"].get("metadata", {})
+                agent_id=final_state.get("current_agent", "system"),
+                response_text=final_state.get("agent_response", {}).get("text", "Desculpe, não consegui processar sua mensagem."),
+                confidence=final_state.get("agent_response", {}).get("confidence", 0.0),
+                should_continue=not final_state.get("conversation_complete", False),
+                next_agent=final_state.get("agent_response", {}).get("next_agent"),
+                metadata=final_state.get("agent_response", {}).get("metadata", {})
             )
             
             # Atualiza sessão
             session.add_message(message.body or "", "user")
             session.add_message(response.response_text, "agent", response.agent_id)
             session.current_agent = response.next_agent or response.agent_id
-            session.conversation_context.update(final_state["context"])
+            session.conversation_context.update(final_state.get("context", {}))
             
             await self.session_manager.save_session(session)
             
-            logger.info(f"LangGraph processed message for {message.from_number}")
+            logger.info(f"Message processed successfully by {response.agent_id}")
             return response
             
         except Exception as e:
-            logger.error(f"LangGraph processing error: {e}")
+            logger.error(f"LangGraph processing error: {e}", exc_info=True)
             return self._create_error_response(str(e))
     
     async def _reception_node(self, state: ConversationState) -> ConversationState:

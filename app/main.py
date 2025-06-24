@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
             user_burst=int(os.getenv("USER_BURST", "2"))
         )
         
-        # LLM Service (usando o serviço correto)
+        # LLM Service
         app_instances["llm_service"] = LLMService()
         await app_instances["llm_service"].initialize()
         logger.info("✅ LLM Service initialized")
@@ -183,11 +183,9 @@ async def root():
         </div>
         
         <h2>API Endpoints</h2>
-        <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook (SYNC mode)</div>
-        <div class="endpoint">POST /webhook/whatsapp/async - WhatsApp webhook (ASYNC mode)</div>
+        <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook</div>
         <div class="endpoint">GET /health - Health check</div>
         <div class="endpoint">GET /metrics - System metrics</div>
-        <div class="endpoint">GET /queue/status - Queue status</div>
         <div class="endpoint">GET /llm/status - LLM status</div>
         
         <script>
@@ -233,11 +231,10 @@ async def whatsapp_webhook_sync(
     MessageSid: str = Form(...)
 ):
     """
-    Webhook SÍNCRONO - Processa e responde imediatamente
-    Este é o modo recomendado para o Twilio WhatsApp
+    Webhook para processar mensagens do WhatsApp
     """
     try:
-        logger.info(f"📱 Webhook sync received from {From}: {Body[:50]}...")
+        logger.info(f"📱 Webhook received from {From}: {Body[:50]}...")
         
         if not app_instances["orchestrator"]:
             raise HTTPException(status_code=503, detail="Service not ready")
@@ -252,18 +249,20 @@ async def whatsapp_webhook_sync(
             body=Body
         )
         
-        # Processa SINCRONAMENTE através do orchestrator
+        # Processa através do orchestrator
         try:
             response = await app_instances["orchestrator"].process_message(message)
+            
+            # IMPORTANTE: Usa response_text do AgentResponse, não o JSON de classificação
             response_text = response.response_text
             
-            logger.info(f"✅ Response generated for {phone_number}: {response_text[:100]}...")
+            logger.info(f"✅ Agent {response.agent_id} generated response: {response_text[:100]}...")
             
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error processing message: {e}", exc_info=True)
             response_text = "Desculpe, ocorreu um erro ao processar sua mensagem. Por favor, tente novamente."
         
-        # Retorna resposta DIRETAMENTE para o Twilio
+        # Retorna resposta TwiML formatada
         return Response(
             content=f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -273,66 +272,12 @@ async def whatsapp_webhook_sync(
         )
         
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"Webhook error: {e}", exc_info=True)
         return Response(
             content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>Erro ao processar mensagem. Por favor, tente novamente.</Message>
+    <Message>Desculpe, ocorreu um erro. Por favor, tente novamente em alguns instantes.</Message>
 </Response>''',
-            media_type="application/xml"
-        )
-
-@app.post("/webhook/whatsapp/async")
-async def whatsapp_webhook_async(
-    From: str = Form(...),
-    Body: str = Form(...),
-    MessageSid: str = Form(...)
-):
-    """
-    Webhook ASSÍNCRONO - Enfileira para processamento posterior
-    Use apenas se precisar de processamento em background
-    """
-    try:
-        if not app_instances["twilio_service"]:
-            raise HTTPException(status_code=503, detail="Service not ready")
-        
-        phone_number = app_instances["twilio_service"].extract_phone_number(From)
-        
-        # Determina prioridade
-        message_lower = Body.lower()
-        if any(urgent in message_lower for urgent in ["urgente", "emergência", "crítico"]):
-            priority = Priority.URGENT
-        elif any(high in message_lower for high in ["importante", "prioridade"]):
-            priority = Priority.HIGH
-        else:
-            priority = Priority.NORMAL
-        
-        # Enfileira mensagem
-        message_id = await app_instances["queue_manager"].enqueue(
-            phone_number=phone_number,
-            content=Body,
-            priority=priority,
-            metadata={"message_sid": MessageSid}
-        )
-        
-        if not message_id:
-            return Response(
-                content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Sistema sobrecarregado. Tente novamente em alguns minutos.</Message></Response>',
-                media_type="application/xml"
-            )
-        
-        logger.info(f"Message queued: {message_id} from {phone_number}")
-        
-        # Resposta de confirmação
-        return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Mensagem recebida! Processando...</Message></Response>',
-            media_type="application/xml"
-        )
-        
-    except Exception as e:
-        logger.error(f"Webhook async error: {e}")
-        return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Erro ao processar mensagem.</Message></Response>',
             media_type="application/xml"
         )
 
@@ -411,13 +356,65 @@ async def test_llm(data: Dict[str, Any]):
         logger.error(f"LLM test error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/queue/status")
-async def get_queue_status():
+@app.get("/analyze/{phone_number}")
+async def analyze_conversation(phone_number: str):
+    """Analisa conversa de um usuário"""
     try:
-        return await app_instances["queue_manager"].get_status()
+        session = await app_instances["session_manager"].get_session(phone_number)
+        
+        if not session:
+            return {"error": "No session found for this number"}
+        
+        return {
+            "phone_number": phone_number,
+            "session_id": session.session_id,
+            "current_agent": session.current_agent,
+            "message_count": len(session.message_history),
+            "context": session.conversation_context,
+            "created_at": session.created_at.isoformat(),
+            "last_activity": session.updated_at.isoformat()
+        }
     except Exception as e:
-        logger.error(f"Queue status error: {e}")
+        logger.error(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/suggestions/{phone_number}")
+async def get_suggestions(phone_number: str, context: Optional[str] = None):
+    """Obtém sugestões inteligentes para o usuário"""
+    try:
+        session = await app_instances["session_manager"].get_session(phone_number)
+        
+        if not session:
+            return {"suggestions": ["Olá", "Menu", "Ajuda"]}
+        
+        # Gera sugestões baseadas no contexto
+        prompt = f"""
+        Baseado no contexto da conversa, sugira 3 próximas mensagens que o usuário poderia enviar.
+        Contexto: {context or 'conversa geral'}
+        Agente atual: {session.current_agent or 'reception'}
+        
+        Responda APENAS com uma lista JSON de 3 strings curtas.
+        """
+        
+        suggestions_response = await app_instances["llm_service"].generate_response(
+            prompt=prompt,
+            system_message="Você é um assistente que sugere próximas mensagens.",
+            temperature=0.5
+        )
+        
+        try:
+            # Tenta extrair JSON
+            import json
+            suggestions = json.loads(suggestions_response)
+        except:
+            # Fallback para sugestões padrão
+            suggestions = ["Ver dados", "Preciso de ajuda", "Voltar ao menu"]
+        
+        return {"suggestions": suggestions}
+        
+    except Exception as e:
+        logger.error(f"Suggestions error: {e}")
+        return {"suggestions": ["Menu", "Ajuda", "Sair"]}
 
 if __name__ == "__main__":
     import uvicorn
