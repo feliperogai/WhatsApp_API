@@ -6,7 +6,7 @@ import json
 
 from app.core.queue_manager import QueueItem, Priority
 from app.core.rate_limiter import AdaptiveRateLimiter
-from app.services.llm_service import OptimizedLLMService, LLMResponse
+from app.core.llm_pool import OptimizedLLMService, LLMResponse
 from app.services.twilio_service import TwilioService
 
 logger = logging.getLogger(__name__)
