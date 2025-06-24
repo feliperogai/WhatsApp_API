@@ -10,9 +10,13 @@ from datetime import datetime
 
 from app.core.queue_manager import QueueManager, Priority
 from app.core.rate_limiter import AdaptiveRateLimiter
-from app.core.llm_pool import OptimizedLLMService  
+from app.core.llm_pool import OptimizedLLMService
 from app.services.message_processor import MessageProcessor
 from app.services.twilio_service import TwilioService
+from app.core.session_manager import SessionManager
+from app.services.llm_service import LLMService
+from app.core.langgraph_orchestrator import LangGraphOrchestrator
+from app.models.message import WhatsAppMessage
 
 load_dotenv()
 
@@ -29,7 +33,9 @@ app_instances = {
     "rate_limiter": None,
     "llm_service": None,
     "twilio_service": None,
-    "message_processor": None
+    "message_processor": None,
+    "session_manager": None,
+    "orchestrator": None
 }
 
 @asynccontextmanager
@@ -44,6 +50,11 @@ async def lifespan(app: FastAPI):
         )
         await app_instances["redis"].ping()
         logger.info("✅ Redis connected")
+        
+        # Session Manager
+        app_instances["session_manager"] = SessionManager()
+        await app_instances["session_manager"].initialize()
+        logger.info("✅ Session Manager initialized")
         
         # Queue Manager
         app_instances["queue_manager"] = QueueManager(
@@ -62,18 +73,8 @@ async def lifespan(app: FastAPI):
             user_burst=int(os.getenv("USER_BURST", "2"))
         )
         
-        # LLM Service
-        ollama_urls = os.getenv("OLLAMA_URLS", "http://localhost:11434").split(",")
-        ollama_models = os.getenv("OLLAMA_MODELS", "llama3.1:8b").split(",")
-        
-        app_instances["llm_service"] = OptimizedLLMService(
-            base_urls=ollama_urls,
-            models=ollama_models,
-            redis_client=app_instances["redis"],
-            pool_size=int(os.getenv("LLM_POOL_SIZE", "2")),
-            cache_ttl=int(os.getenv("CACHE_TTL_SECONDS", "3600")),
-            max_cache_size=int(os.getenv("MAX_CACHE_SIZE", "1000"))
-        )
+        # LLM Service (usando o serviço correto)
+        app_instances["llm_service"] = LLMService()
         await app_instances["llm_service"].initialize()
         logger.info("✅ LLM Service initialized")
         
@@ -81,17 +82,23 @@ async def lifespan(app: FastAPI):
         app_instances["twilio_service"] = TwilioService()
         logger.info("✅ Twilio Service initialized")
         
+        # LangGraph Orchestrator
+        app_instances["orchestrator"] = LangGraphOrchestrator(
+            app_instances["session_manager"],
+            app_instances["llm_service"]
+        )
+        logger.info("✅ LangGraph Orchestrator initialized")
+        
         # Message Processor
         app_instances["message_processor"] = MessageProcessor(
-            llm_service=app_instances["llm_service"],
-            rate_limiter=app_instances["rate_limiter"],
+            orchestrator=app_instances["orchestrator"],
             twilio_service=app_instances["twilio_service"],
-            redis_client=app_instances["redis"]
+            rate_limiter=app_instances["rate_limiter"]
         )
         
         # Start queue workers
         await app_instances["queue_manager"].start_workers(
-            app_instances["message_processor"].process_message
+            app_instances["message_processor"].process_queued_message
         )
         logger.info("✅ Queue workers started")
         
@@ -110,7 +117,7 @@ async def lifespan(app: FastAPI):
         await app_instances["queue_manager"].stop_workers()
     
     if app_instances["llm_service"]:
-        await app_instances["llm_service"].close()
+        await app_instances["llm_service"].cleanup()
     
     if app_instances["redis"]:
         await app_instances["redis"].close()
@@ -119,7 +126,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Jarvis WhatsApp Service",
-    description="Optimized WhatsApp AI Assistant with Queue Management",
+    description="WhatsApp AI Assistant with Queue Management and LangGraph",
     version="3.0",
     lifespan=lifespan
 )
@@ -168,7 +175,7 @@ async def root():
     </head>
     <body>
         <h1>🤖 Jarvis WhatsApp Service v3.0</h1>
-        <p>Optimized AI Assistant with Queue Management</p>
+        <p>AI Assistant with Queue Management and LangGraph</p>
         
         <div class="status">
             <h2>System Status</h2>
@@ -176,12 +183,12 @@ async def root():
         </div>
         
         <h2>API Endpoints</h2>
-        <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook</div>
+        <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook (SYNC mode)</div>
+        <div class="endpoint">POST /webhook/whatsapp/async - WhatsApp webhook (ASYNC mode)</div>
         <div class="endpoint">GET /health - Health check</div>
         <div class="endpoint">GET /metrics - System metrics</div>
         <div class="endpoint">GET /queue/status - Queue status</div>
-        <div class="endpoint">GET /queue/dashboard - Queue monitoring dashboard</div>
-        <div class="endpoint">POST /queue/retry/{message_id} - Retry failed message</div>
+        <div class="endpoint">GET /llm/status - LLM status</div>
         
         <script>
             async function updateMetrics() {
@@ -199,17 +206,16 @@ async def root():
                             <div class="value">${data.queue.processing}</div>
                         </div>
                         <div class="metric">
-                            <div>Success Rate</div>
-                            <div class="value">${(data.processor.success_rate * 100).toFixed(1)}%</div>
+                            <div>LLM Status</div>
+                            <div class="value">${data.llm_status || 'N/A'}</div>
                         </div>
                         <div class="metric">
-                            <div>Avg Response</div>
-                            <div class="value">${data.processor.avg_processing_time.toFixed(2)}s</div>
+                            <div>Active Sessions</div>
+                            <div class="value">${data.active_sessions || 0}</div>
                         </div>
                     `;
                 } catch (e) {
                     console.error('Failed to update metrics:', e);
-                    document.getElementById('metrics').innerHTML = '<p>Error loading metrics</p>';
                 }
             }
             
@@ -221,18 +227,78 @@ async def root():
     """)
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(
+async def whatsapp_webhook_sync(
     From: str = Form(...),
     Body: str = Form(...),
     MessageSid: str = Form(...)
 ):
+    """
+    Webhook SÍNCRONO - Processa e responde imediatamente
+    Este é o modo recomendado para o Twilio WhatsApp
+    """
+    try:
+        logger.info(f"📱 Webhook sync received from {From}: {Body[:50]}...")
+        
+        if not app_instances["orchestrator"]:
+            raise HTTPException(status_code=503, detail="Service not ready")
+        
+        phone_number = app_instances["twilio_service"].extract_phone_number(From)
+        
+        # Cria mensagem WhatsApp
+        message = WhatsAppMessage(
+            message_id=MessageSid,
+            from_number=phone_number,
+            to_number=app_instances["twilio_service"].phone_number,
+            body=Body
+        )
+        
+        # Processa SINCRONAMENTE através do orchestrator
+        try:
+            response = await app_instances["orchestrator"].process_message(message)
+            response_text = response.response_text
+            
+            logger.info(f"✅ Response generated for {phone_number}: {response_text[:100]}...")
+            
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+            response_text = "Desculpe, ocorreu um erro ao processar sua mensagem. Por favor, tente novamente."
+        
+        # Retorna resposta DIRETAMENTE para o Twilio
+        return Response(
+            content=f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>{response_text}</Message>
+</Response>''',
+            media_type="application/xml"
+        )
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return Response(
+            content='''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>Erro ao processar mensagem. Por favor, tente novamente.</Message>
+</Response>''',
+            media_type="application/xml"
+        )
+
+@app.post("/webhook/whatsapp/async")
+async def whatsapp_webhook_async(
+    From: str = Form(...),
+    Body: str = Form(...),
+    MessageSid: str = Form(...)
+):
+    """
+    Webhook ASSÍNCRONO - Enfileira para processamento posterior
+    Use apenas se precisar de processamento em background
+    """
     try:
         if not app_instances["twilio_service"]:
             raise HTTPException(status_code=503, detail="Service not ready")
         
         phone_number = app_instances["twilio_service"].extract_phone_number(From)
         
-        # Determina prioridade baseada no conteúdo
+        # Determina prioridade
         message_lower = Body.lower()
         if any(urgent in message_lower for urgent in ["urgente", "emergência", "crítico"]):
             priority = Priority.URGENT
@@ -257,14 +323,14 @@ async def whatsapp_webhook(
         
         logger.info(f"Message queued: {message_id} from {phone_number}")
         
-        # Retorna resposta vazia para Twilio (processamento assíncrono)
+        # Resposta de confirmação
         return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Mensagem recebida! Processando...</Message></Response>',
             media_type="application/xml"
         )
         
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"Webhook async error: {e}")
         return Response(
             content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Erro ao processar mensagem.</Message></Response>',
             media_type="application/xml"
@@ -276,23 +342,20 @@ async def health_check():
         # Check Redis
         await app_instances["redis"].ping()
         
-        # Check queue status
-        queue_status = await app_instances["queue_manager"].get_status()
+        # Check LLM
+        llm_status = await app_instances["llm_service"].get_service_status()
         
-        # Check LLM status
-        llm_status = await app_instances["llm_service"].get_status()
+        # Check sessions
+        active_sessions = await app_instances["session_manager"].get_active_sessions_count()
         
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "queue": {
-                "pending": queue_status["pending"],
-                "processing": queue_status["processing"],
-                "health": queue_status["queue_health"]
-            },
-            "llm": {
-                "healthy_connections": llm_status["pool"]["healthy_connections"],
-                "total_connections": llm_status["pool"]["total_connections"]
+            "components": {
+                "redis": "connected",
+                "llm": llm_status.get("status", "unknown"),
+                "sessions": active_sessions,
+                "orchestrator": "active" if app_instances["orchestrator"] else "inactive"
             }
         }
     except Exception as e:
@@ -306,15 +369,46 @@ async def health_check():
 async def get_metrics():
     try:
         queue_status = await app_instances["queue_manager"].get_status()
-        processor_metrics = await app_instances["message_processor"].get_metrics()
+        llm_status = await app_instances["llm_service"].get_service_status()
+        active_sessions = await app_instances["session_manager"].get_active_sessions_count()
         
         return {
             "queue": queue_status,
-            "processor": processor_metrics,
+            "llm_status": llm_status.get("status", "unknown"),
+            "active_sessions": active_sessions,
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Metrics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/llm/status")
+async def get_llm_status():
+    """Endpoint específico para status do LLM"""
+    try:
+        return await app_instances["llm_service"].get_service_status()
+    except Exception as e:
+        logger.error(f"LLM status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/llm/test")
+async def test_llm(data: Dict[str, Any]):
+    """Testa LLM diretamente"""
+    try:
+        prompt = data.get("prompt", "Olá")
+        
+        response = await app_instances["llm_service"].generate_response(
+            prompt=prompt,
+            system_message="Você é um assistente de teste. Responda brevemente."
+        )
+        
+        return {
+            "prompt": prompt,
+            "response": response,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"LLM test error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/queue/status")
@@ -323,50 +417,6 @@ async def get_queue_status():
         return await app_instances["queue_manager"].get_status()
     except Exception as e:
         logger.error(f"Queue status error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/queue/dead-letters")
-async def get_dead_letters(limit: int = 10):
-    try:
-        dead_letters = await app_instances["queue_manager"].get_dead_letters(limit)
-        return [item.to_dict() for item in dead_letters]
-    except Exception as e:
-        logger.error(f"Dead letters error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/queue/retry/{message_id}")
-async def retry_dead_letter(message_id: str):
-    try:
-        success = await app_instances["queue_manager"].retry_dead_letter(message_id)
-        if success:
-            return {"status": "success", "message": "Message requeued"}
-        else:
-            raise HTTPException(status_code=404, detail="Message not found")
-    except Exception as e:
-        logger.error(f"Retry error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/cache/clear")
-async def clear_cache():
-    try:
-        # Clear LLM cache
-        cursor = 0
-        cleared = 0
-        while True:
-            cursor, keys = await app_instances["redis"].scan(
-                cursor, 
-                match="jarvis:llm_cache:*", 
-                count=100
-            )
-            if keys:
-                await app_instances["redis"].delete(*keys)
-                cleared += len(keys)
-            if cursor == 0:
-                break
-        
-        return {"status": "success", "cleared": cleared}
-    except Exception as e:
-        logger.error(f"Cache clear error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
