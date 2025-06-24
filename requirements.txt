@@ -14,6 +14,18 @@ httpx
 # Redis
 redis
 
+# LangChain & AI
+langchain
+langchain-community
+langgraph
+openai
+
 # Utils
 python-dotenv
 python-multipart
+loguru
+psutil
+
+# Development
+pytest
+pytest-asyncio

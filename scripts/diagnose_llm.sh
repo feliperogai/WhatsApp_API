@@ -1,203 +1,238 @@
-#!/bin/bash
-
-echo "🔍 Diagnóstico - Jarvis LLM Integration"
-echo "======================================="
+echo "🔍 Diagnóstico Completo - Jarvis WhatsApp"
+echo "========================================"
 
 # Cores
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
 NC='\033[0m'
 
-# Configurações
-OLLAMA_URL="http://192.168.15.31:11435"
-APP_URL="http://localhost:8000"
-
-echo -e "${PURPLE}1. Verificando Conectividade${NC}"
-echo "----------------------------------------"
-
-# Teste de rede para Ollama
-echo -n -e "${BLUE}Ping para Ollama host (192.168.15.31)...${NC} "
-if ping -c 1 192.168.15.31 >/dev/null 2>&1; then
-    echo -e "${GREEN}✅ OK${NC}"
-else
-    echo -e "${RED}❌ FALHOU - Host inacessível${NC}"
-    echo -e "${YELLOW}Verifique:${NC}"
-    echo "  - O servidor Ollama está ligado?"
-    echo "  - O IP está correto?"
-    echo "  - Firewall está bloqueando?"
-fi
-
-# Teste de porta Ollama
-echo -n -e "${BLUE}Testando porta Ollama (11435)...${NC} "
-if nc -zv 192.168.15.31 11435 2>&1 | grep -q succeeded; then
-    echo -e "${GREEN}✅ Porta aberta${NC}"
-else
-    echo -e "${RED}❌ Porta fechada${NC}"
-    echo -e "${YELLOW}Verifique:${NC}"
-    echo "  - Ollama está rodando? (ollama serve)"
-    echo "  - Porta correta? (padrão: 11434)"
-fi
-
-echo ""
-echo -e "${PURPLE}2. Verificando Ollama${NC}"
-echo "----------------------------------------"
-
-# Teste API Ollama
-echo -n -e "${BLUE}API Ollama /api/tags...${NC} "
-if curl -s "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
-    echo -e "${GREEN}✅ OK${NC}"
-    
-    # Lista modelos
-    echo -e "${BLUE}Modelos disponíveis:${NC}"
-    curl -s "$OLLAMA_URL/api/tags" | jq -r '.models[].name' 2>/dev/null | sed 's/^/  - /'
-else
-    echo -e "${RED}❌ FALHOU${NC}"
-fi
-
-# Teste modelo específico
-echo -n -e "${BLUE}Testando modelo llama3.1:8b...${NC} "
-MODEL_EXISTS=$(curl -s "$OLLAMA_URL/api/tags" | jq -r '.models[].name' | grep -c "llama3.1:8b")
-if [ "$MODEL_EXISTS" -gt 0 ]; then
-    echo -e "${GREEN}✅ Modelo disponível${NC}"
-else
-    echo -e "${RED}❌ Modelo não encontrado${NC}"
-    echo -e "${YELLOW}Execute: ollama pull llama3.1:8b${NC}"
-fi
-
-echo ""
-echo -e "${PURPLE}3. Verificando Docker${NC}"
-echo "----------------------------------------"
-
-# Containers rodando
-echo -e "${BLUE}Containers:${NC}"
-docker-compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" | tail -n +2 | while read line; do
-    if [[ "$line" == *"Up"* ]]; then
-        echo -e "  ${GREEN}$line${NC}"
+# Função para checar arquivo
+check_file() {
+    if [ -f "$1" ]; then
+        echo -e "${GREEN}✅ $1 exists${NC}"
+        return 0
     else
-        echo -e "  ${RED}$line${NC}"
+        echo -e "${RED}❌ $1 missing${NC}"
+        return 1
     fi
-done
+}
 
-# Logs recentes de erro
-echo ""
-echo -e "${BLUE}Erros recentes (últimas 10 linhas):${NC}"
-docker-compose logs jarvis-whatsapp-llm 2>&1 | grep -i "error\|exception" | tail -10 | sed 's/^/  /'
+# Função para checar comando
+check_command() {
+    if command -v "$1" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ $1 installed${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ $1 not installed${NC}"
+        return 1
+    fi
+}
 
-echo ""
-echo -e "${PURPLE}4. Verificando Aplicação${NC}"
+echo -e "${BLUE}1. Checking Project Structure${NC}"
 echo "----------------------------------------"
 
-# Health check
-echo -n -e "${BLUE}Health check...${NC} "
-HEALTH=$(curl -s "$APP_URL/health" | jq -r '.status' 2>/dev/null)
-if [[ "$HEALTH" == "healthy" ]]; then
-    echo -e "${GREEN}✅ Healthy${NC}"
+# Detecta diretório
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$SCRIPT_DIR" == */scripts ]]; then
+    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 else
-    echo -e "${RED}❌ Unhealthy${NC}"
+    PROJECT_ROOT="$SCRIPT_DIR"
 fi
 
-# LLM Status detalhado
-echo -e "${BLUE}LLM Service status:${NC}"
-curl -s "$APP_URL/llm/status" 2>/dev/null | jq '{
-    status: .status,
-    ollama_url: .ollama_url,
-    model: .model,
-    initialized: .initialized,
-    model_available: .model_available
-}' 2>/dev/null || echo "  Não disponível"
+cd "$PROJECT_ROOT"
+echo "Working directory: $PROJECT_ROOT"
+
+# Checa arquivos essenciais
+check_file ".env.example"
+check_file ".env"
+check_file "requirements.txt"
+check_file "Dockerfile"
+check_file "docker-compose.yml"
+check_file "app/main.py"
 
 echo ""
-echo -e "${PURPLE}5. Teste de Integração Rápido${NC}"
+echo -e "${BLUE}2. Checking Dependencies${NC}"
 echo "----------------------------------------"
 
-# Teste webhook
-echo -e "${BLUE}Testando webhook com 'Olá'...${NC}"
-RESPONSE=$(curl -s -X POST "$APP_URL/webhook/whatsapp" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "From=whatsapp:+5511999999999&To=whatsapp:+14155238886&Body=Olá&MessageSid=SMtest123" \
-  2>&1)
-
-if [[ "$RESPONSE" == *"<Response>"* ]] && [[ "$RESPONSE" == *"<Message>"* ]]; then
-    echo -e "${GREEN}✅ Webhook respondeu${NC}"
-    echo "$RESPONSE" | grep -o '<Message>.*</Message>' | sed 's/<[^>]*>//g' | sed 's/^/  Resposta: /'
-else
-    echo -e "${RED}❌ Webhook não respondeu corretamente${NC}"
-    echo -e "${YELLOW}Resposta recebida:${NC}"
-    echo "$RESPONSE" | head -5 | sed 's/^/  /'
-fi
+check_command "docker"
+check_command "docker-compose"
+check_command "python3"
+check_command "pip3"
+check_command "curl"
 
 echo ""
-echo -e "${PURPLE}6. Diagnóstico de Variáveis de Ambiente${NC}"
+echo -e "${BLUE}3. Checking Environment Variables${NC}"
 echo "----------------------------------------"
 
-echo -e "${BLUE}Verificando .env...${NC}"
 if [ -f .env ]; then
-    echo -e "${GREEN}✅ Arquivo .env existe${NC}"
-    
-    # Verifica variáveis importantes
-    for var in "OLLAMA_BASE_URL" "OLLAMA_MODEL" "TWILIO_ACCOUNT_SID"; do
+    # Checa variáveis críticas
+    for var in "TWILIO_ACCOUNT_SID" "TWILIO_AUTH_TOKEN" "TWILIO_PHONE_NUMBER" "OLLAMA_URLS" "REDIS_URL"; do
         if grep -q "^$var=" .env; then
             VALUE=$(grep "^$var=" .env | cut -d'=' -f2)
-            echo -e "  $var: ${GREEN}definido${NC} (${VALUE:0:20}...)"
+            if [[ "$VALUE" == *"your_"* ]] || [ -z "$VALUE" ]; then
+                echo -e "${YELLOW}⚠️  $var needs configuration${NC}"
+            else
+                echo -e "${GREEN}✅ $var configured${NC}"
+            fi
         else
-            echo -e "  $var: ${RED}não definido${NC}"
+            echo -e "${RED}❌ $var not found in .env${NC}"
         fi
     done
 else
-    echo -e "${RED}❌ Arquivo .env não encontrado${NC}"
+    echo -e "${RED}❌ .env file not found!${NC}"
 fi
 
 echo ""
-echo -e "${PURPLE}7. Recomendações${NC}"
+echo -e "${BLUE}4. Checking Python Imports${NC}"
 echo "----------------------------------------"
 
-# Analisa problemas e sugere soluções
-PROBLEMS=0
+# Testa imports principais
+python3 -c "
+import sys
+sys.path.append('.')
+errors = []
 
-# Verifica Ollama
-if ! curl -s "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
-    echo -e "${RED}⚠️ Problema: Ollama não acessível${NC}"
-    echo "  Solução: Verifique se Ollama está rodando em $OLLAMA_URL"
-    echo "  Execute: ollama serve"
-    PROBLEMS=$((PROBLEMS + 1))
-fi
+try:
+    import fastapi
+    print('✅ fastapi')
+except ImportError:
+    print('❌ fastapi')
+    errors.append('fastapi')
 
-# Verifica aplicação
-if [[ "$HEALTH" != "healthy" ]]; then
-    echo -e "${RED}⚠️ Problema: Aplicação não está saudável${NC}"
-    echo "  Solução: Reinicie os containers"
-    echo "  Execute: docker-compose restart"
-    PROBLEMS=$((PROBLEMS + 1))
-fi
+try:
+    import redis
+    print('✅ redis')
+except ImportError:
+    print('❌ redis')
+    errors.append('redis')
 
-# Verifica integração
-LLM_STATUS=$(curl -s "$APP_URL/llm/status" | jq -r '.status' 2>/dev/null)
-if [[ "$LLM_STATUS" != "online" ]]; then
-    echo -e "${RED}⚠️ Problema: LLM não está online${NC}"
-    echo "  Solução: Verifique logs para erros"
-    echo "  Execute: docker-compose logs jarvis-whatsapp-llm"
-    PROBLEMS=$((PROBLEMS + 1))
-fi
+try:
+    import aiohttp
+    print('✅ aiohttp')
+except ImportError:
+    print('❌ aiohttp')
+    errors.append('aiohttp')
 
-if [ $PROBLEMS -eq 0 ]; then
-    echo -e "${GREEN}✅ Nenhum problema detectado!${NC}"
-    echo "  Sistema parece estar funcionando corretamente."
+try:
+    import twilio
+    print('✅ twilio')
+except ImportError:
+    print('❌ twilio')
+    errors.append('twilio')
+
+try:
+    import langchain
+    print('✅ langchain')
+except ImportError:
+    print('❌ langchain')
+    errors.append('langchain')
+
+if errors:
+    print(f'\n⚠️  Missing packages: {errors}')
+    print('Run: pip3 install -r requirements.txt')
+"
+
+echo ""
+echo -e "${BLUE}5. Checking Code Issues${NC}"
+echo "----------------------------------------"
+
+# Checa imports problemáticos
+echo "Checking for import errors..."
+
+# main.py check
+if grep -q "from app.services.llm_service import OptimizedLLMService" app/main.py 2>/dev/null; then
+    echo -e "${RED}❌ Import error in main.py: OptimizedLLMService should be from app.core.llm_pool${NC}"
 else
-    echo ""
-    echo -e "${YELLOW}Total de problemas encontrados: $PROBLEMS${NC}"
+    echo -e "${GREEN}✅ main.py imports look correct${NC}"
+fi
+
+# Check class definitions match imports
+if [ -f "app/services/llm_service.py" ]; then
+    if grep -q "class LLMService" app/services/llm_service.py; then
+        echo -e "${GREEN}✅ LLMService class found${NC}"
+    else
+        echo -e "${RED}❌ LLMService class not found${NC}"
+    fi
 fi
 
 echo ""
-echo -e "${PURPLE}8. Comandos Úteis${NC}"
+echo -e "${BLUE}6. Checking Docker${NC}"
 echo "----------------------------------------"
-echo "• Ver logs em tempo real: docker-compose logs -f jarvis-whatsapp-llm"
-echo "• Reiniciar aplicação: docker-compose restart jarvis-whatsapp-llm"
-echo "• Testar Ollama direto: curl $OLLAMA_URL/api/chat -d '{...}'"
-echo "• Resetar tudo: docker-compose down && docker-compose up -d"
-echo "• Monitorar: ./monitor_llm.sh"
+
+# Docker daemon running?
+if docker info >/dev/null 2>&1; then
+    echo -e "${GREEN}✅ Docker daemon running${NC}"
+else
+    echo -e "${RED}❌ Docker daemon not running${NC}"
+fi
+
+# Containers status
+if docker-compose ps 2>/dev/null | grep -q "Up"; then
+    echo -e "${GREEN}✅ Some containers are running${NC}"
+    docker-compose ps
+else
+    echo -e "${YELLOW}⚠️  No containers running${NC}"
+fi
 
 echo ""
-echo -e "${BLUE}Diagnóstico concluído!${NC}"
+echo -e "${BLUE}7. Checking Ollama${NC}"
+echo "----------------------------------------"
+
+if [ -f .env ]; then
+    OLLAMA_URL=$(grep OLLAMA_URLS .env | cut -d'=' -f2 | cut -d',' -f1 | tr -d ' ')
+    if [ -z "$OLLAMA_URL" ]; then
+        OLLAMA_URL="http://localhost:11434"
+    fi
+    
+    echo "Ollama URL: $OLLAMA_URL"
+    
+    if curl -s "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Ollama accessible${NC}"
+        
+        # Check models
+        MODELS=$(curl -s "$OLLAMA_URL/api/tags" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$MODELS" ]; then
+            echo "Available models:"
+            echo "$MODELS" | sed 's/^/  - /'
+        fi
+    else
+        echo -e "${RED}❌ Ollama not accessible${NC}"
+        echo "  Make sure Ollama is running: ollama serve"
+    fi
+fi
+
+echo ""
+echo -e "${BLUE}8. Summary & Recommendations${NC}"
+echo "----------------------------------------"
+
+ISSUES=0
+
+# Count issues
+[ ! -f .env ] && ISSUES=$((ISSUES + 1))
+[ ! -f requirements.txt ] && ISSUES=$((ISSUES + 1))
+grep -q "OptimizedLLMService" app/main.py 2>/dev/null && ISSUES=$((ISSUES + 1))
+! docker info >/dev/null 2>&1 && ISSUES=$((ISSUES + 1))
+
+if [ $ISSUES -eq 0 ]; then
+    echo -e "${GREEN}✅ No critical issues found!${NC}"
+    echo ""
+    echo "Next steps:"
+    echo "1. Run: ./scripts/setup_fixed.sh"
+    echo "2. Configure .env if needed"
+    echo "3. Start services: docker-compose up -d"
+else
+    echo -e "${RED}❌ Found $ISSUES critical issues${NC}"
+    echo ""
+    echo "Fix these issues:"
+    [ ! -f .env ] && echo "1. Create .env from .env.example"
+    [ ! -f requirements.txt ] && echo "2. Create requirements.txt"
+    grep -q "OptimizedLLMService" app/main.py 2>/dev/null && echo "3. Fix import in main.py"
+    ! docker info >/dev/null 2>&1 && echo "4. Start Docker daemon"
+fi
+
+echo ""
+echo "═══════════════════════════════════════"
+echo "Diagnostic complete!"
+echo "═══════════════════════════════════════"

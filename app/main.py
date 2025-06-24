@@ -6,10 +6,11 @@ import redis.asyncio as redis
 from typing import Dict, Any, Optional
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 from app.core.queue_manager import QueueManager, Priority
 from app.core.rate_limiter import AdaptiveRateLimiter
-from app.services.llm_service import OptimizedLLMService
+from app.core.llm_pool import OptimizedLLMService  
 from app.services.message_processor import MessageProcessor
 from app.services.twilio_service import TwilioService
 
@@ -36,12 +37,15 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Jarvis WhatsApp Service...")
     
     try:
+        # Redis connection
         app_instances["redis"] = redis.from_url(
             os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             decode_responses=False
         )
         await app_instances["redis"].ping()
+        logger.info("✅ Redis connected")
         
+        # Queue Manager
         app_instances["queue_manager"] = QueueManager(
             redis_client=app_instances["redis"],
             max_queue_size=int(os.getenv("MAX_QUEUE_SIZE", "1000")),
@@ -49,6 +53,7 @@ async def lifespan(app: FastAPI):
             max_retries=int(os.getenv("MAX_RETRIES", "3"))
         )
         
+        # Rate Limiter
         app_instances["rate_limiter"] = AdaptiveRateLimiter(
             redis_client=app_instances["redis"],
             global_rate=float(os.getenv("GLOBAL_RATE_LIMIT", "10"))/60,
@@ -57,6 +62,7 @@ async def lifespan(app: FastAPI):
             user_burst=int(os.getenv("USER_BURST", "2"))
         )
         
+        # LLM Service
         ollama_urls = os.getenv("OLLAMA_URLS", "http://localhost:11434").split(",")
         ollama_models = os.getenv("OLLAMA_MODELS", "llama3.1:8b").split(",")
         
@@ -65,17 +71,17 @@ async def lifespan(app: FastAPI):
             models=ollama_models,
             redis_client=app_instances["redis"],
             pool_size=int(os.getenv("LLM_POOL_SIZE", "2")),
-            cache_ttl=int(os.getenv("CACHE_TTL", "3600")),
+            cache_ttl=int(os.getenv("CACHE_TTL_SECONDS", "3600")),
             max_cache_size=int(os.getenv("MAX_CACHE_SIZE", "1000"))
         )
         await app_instances["llm_service"].initialize()
+        logger.info("✅ LLM Service initialized")
         
-        app_instances["twilio_service"] = TwilioService(
-            account_sid=os.getenv("TWILIO_ACCOUNT_SID"),
-            auth_token=os.getenv("TWILIO_AUTH_TOKEN"),
-            phone_number=os.getenv("TWILIO_PHONE_NUMBER")
-        )
+        # Twilio Service
+        app_instances["twilio_service"] = TwilioService()
+        logger.info("✅ Twilio Service initialized")
         
+        # Message Processor
         app_instances["message_processor"] = MessageProcessor(
             llm_service=app_instances["llm_service"],
             rate_limiter=app_instances["rate_limiter"],
@@ -83,9 +89,11 @@ async def lifespan(app: FastAPI):
             redis_client=app_instances["redis"]
         )
         
+        # Start queue workers
         await app_instances["queue_manager"].start_workers(
             app_instances["message_processor"].process_message
         )
+        logger.info("✅ Queue workers started")
         
         logger.info("✅ Jarvis WhatsApp Service started successfully")
         
@@ -95,6 +103,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # Shutdown
     logger.info("Shutting down Jarvis WhatsApp Service...")
     
     if app_instances["queue_manager"]:
@@ -115,7 +124,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
     return HTMLResponse("""
     <html>
@@ -171,6 +180,7 @@ async def root():
         <div class="endpoint">GET /health - Health check</div>
         <div class="endpoint">GET /metrics - System metrics</div>
         <div class="endpoint">GET /queue/status - Queue status</div>
+        <div class="endpoint">GET /queue/dashboard - Queue monitoring dashboard</div>
         <div class="endpoint">POST /queue/retry/{message_id} - Retry failed message</div>
         
         <script>
@@ -199,6 +209,7 @@ async def root():
                     `;
                 } catch (e) {
                     console.error('Failed to update metrics:', e);
+                    document.getElementById('metrics').innerHTML = '<p>Error loading metrics</p>';
                 }
             }
             
@@ -221,6 +232,7 @@ async def whatsapp_webhook(
         
         phone_number = app_instances["twilio_service"].extract_phone_number(From)
         
+        # Determina prioridade baseada no conteúdo
         message_lower = Body.lower()
         if any(urgent in message_lower for urgent in ["urgente", "emergência", "crítico"]):
             priority = Priority.URGENT
@@ -229,6 +241,7 @@ async def whatsapp_webhook(
         else:
             priority = Priority.NORMAL
         
+        # Enfileira mensagem
         message_id = await app_instances["queue_manager"].enqueue(
             phone_number=phone_number,
             content=Body,
@@ -244,6 +257,7 @@ async def whatsapp_webhook(
         
         logger.info(f"Message queued: {message_id} from {phone_number}")
         
+        # Retorna resposta vazia para Twilio (processamento assíncrono)
         return Response(
             content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
             media_type="application/xml"
@@ -259,18 +273,30 @@ async def whatsapp_webhook(
 @app.get("/health")
 async def health_check():
     try:
+        # Check Redis
         await app_instances["redis"].ping()
+        
+        # Check queue status
         queue_status = await app_instances["queue_manager"].get_status()
+        
+        # Check LLM status
+        llm_status = await app_instances["llm_service"].get_status()
         
         return {
             "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
             "queue": {
                 "pending": queue_status["pending"],
                 "processing": queue_status["processing"],
                 "health": queue_status["queue_health"]
+            },
+            "llm": {
+                "healthy_connections": llm_status["pool"]["healthy_connections"],
+                "total_connections": llm_status["pool"]["total_connections"]
             }
         }
     except Exception as e:
+        logger.error(f"Health check error: {e}")
         return JSONResponse(
             status_code=503,
             content={"status": "unhealthy", "error": str(e)}
@@ -302,7 +328,8 @@ async def get_queue_status():
 @app.get("/queue/dead-letters")
 async def get_dead_letters(limit: int = 10):
     try:
-        return await app_instances["queue_manager"].get_dead_letters(limit)
+        dead_letters = await app_instances["queue_manager"].get_dead_letters(limit)
+        return [item.to_dict() for item in dead_letters]
     except Exception as e:
         logger.error(f"Dead letters error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
