@@ -253,14 +253,20 @@ async def whatsapp_webhook_sync(
         try:
             response = await app_instances["orchestrator"].process_message(message)
             
-            # IMPORTANTE: Usa response_text do AgentResponse, não o JSON de classificação
+            # CORREÇÃO: Usa response_text do AgentResponse
             response_text = response.response_text
+            
+            # Remove o rodapé técnico se existir
+            if "💡 Digite 'menu'" in response_text:
+                lines = response_text.split('\n')
+                # Remove as últimas linhas que contêm o rodapé
+                response_text = '\n'.join([line for line in lines if "💡 Digite 'menu'" not in line]).strip()
             
             logger.info(f"✅ Agent {response.agent_id} generated response: {response_text[:100]}...")
             
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            response_text = "Desculpe, ocorreu um erro ao processar sua mensagem. Por favor, tente novamente."
+            response_text = "Ops! 😅 Tive um probleminha aqui. Pode repetir sua mensagem?"
         
         # Retorna resposta TwiML formatada
         return Response(
@@ -276,7 +282,7 @@ async def whatsapp_webhook_sync(
         return Response(
             content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>Desculpe, ocorreu um erro. Por favor, tente novamente em alguns instantes.</Message>
+    <Message>Opa! 😊 Parece que algo deu errado por aqui. Que tal tentar de novo em alguns segundinhos?</Message>
 </Response>''',
             media_type="application/xml"
         )

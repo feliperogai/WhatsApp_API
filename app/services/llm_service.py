@@ -174,59 +174,80 @@ class LLMService:
         """Resposta fallback quando LLM não está disponível"""
         prompt_lower = prompt.lower()
         
-        # Respostas padrão baseadas em palavras-chave
-        if any(word in prompt_lower for word in ["oi", "olá", "bom dia", "boa tarde", "boa noite"]):
-            return """Olá! 👋 Bem-vindo ao Jarvis Assistant!
-
-Sou seu assistente virtual e posso ajudar com:
-- 📊 Dados e Relatórios
-- 🔧 Suporte Técnico
-- 📅 Agendamentos
-- 💬 Informações Gerais
-
-Como posso ajudar você hoje?"""
+        # Respostas mais naturais e variadas
+        greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "hey", "opa"]
+        if any(word in prompt_lower for word in greetings):
+            responses = [
+                "Oi! Tudo bem? 😊 Como posso te ajudar hoje?",
+                "Opa! Que bom te ver por aqui! O que você precisa?",
+                "Oi oi! Como você tá? Precisa de alguma coisa?",
+                "Hey! Tudo certo? Me conta como posso ajudar!",
+                "Olá! Seja bem-vindo(a)! Em que posso ser útil?"
+            ]
+            import random
+            return random.choice(responses)
         
-        elif any(word in prompt_lower for word in ["menu", "opções", "ajuda"]):
-            return """📋 MENU PRINCIPAL
+        elif any(word in prompt_lower for word in ["menu", "opções", "opcoes", "ajuda", "o que você faz"]):
+            return """Claro! Eu posso te ajudar com várias coisas:
 
-Escolha uma opção:
-- 📊 Dados e Relatórios - Digite "dados"
-- 🔧 Suporte Técnico - Digite "suporte"
-- 📅 Agendamentos - Digite "agendar"
-- 💬 Falar com Atendente - Digite "atendente"
+    📊 **Dados e Relatórios** - Vendas, métricas, dashboards
+    🔧 **Suporte Técnico** - Problemas, erros, dúvidas
+    📅 **Agendamentos** - Reuniões, compromissos
+    💬 **Bate-papo** - Qualquer outra coisa!
 
-O que você precisa?"""
+    O que você precisa? 😊"""
         
-        elif any(word in prompt_lower for word in ["dados", "relatório", "dashboard"]):
-            return """📊 Para acessar dados e relatórios, estou conectando você com nosso analista de dados.
+        elif any(word in prompt_lower for word in ["dados", "relatório", "relatorio", "vendas", "dashboard", "métrica", "metrica"]):
+            return """Legal! Vou puxar essas informações pra você! 📊
 
-Você pode solicitar:
-- Relatórios de vendas
-- Dashboard executivo
-- Análises de clientes
-- Métricas de performance
+    Você quer ver:
+    - Vendas do mês?
+    - Comparativo com mês anterior?
+    - Performance geral?
+    - Ou algum dado específico?
 
-O que você gostaria de ver?"""
+    Me conta o que precisa!"""
         
-        elif any(word in prompt_lower for word in ["erro", "problema", "bug", "suporte"]):
-            return """🔧 Entendi que você está com um problema técnico.
+        elif any(word in prompt_lower for word in ["erro", "problema", "bug", "não funciona", "nao funciona", "travou"]):
+            return """Poxa, que chato! Vamos resolver isso juntos 🔧
 
-Para ajudar melhor, por favor descreva:
-- Qual erro está ocorrendo?
-- Quando começou?
-- O que você estava tentando fazer?
+    Me conta:
+    - O que aconteceu exatamente?
+    - Quando começou o problema?
+    - Já tentou reiniciar?
 
-Vou criar um ticket de suporte para você."""
+    Com essas infos consigo te ajudar melhor!"""
+        
+        elif any(word in prompt_lower for word in ["obrigado", "obrigada", "valeu", "thanks", "brigado"]):
+            responses = [
+                "Por nada! Sempre que precisar, tô aqui! 😊",
+                "Imagina! Foi um prazer ajudar! 🤗",
+                "Que isso! Conta comigo sempre! ✨",
+                "De nada! Volte sempre que precisar!"
+            ]
+            import random
+            return random.choice(responses)
+        
+        elif any(word in prompt_lower for word in ["tchau", "até", "ate", "adeus", "bye", "xau"]):
+            responses = [
+                "Tchau! Foi ótimo falar com você! Até mais! 👋",
+                "Até logo! Se cuida! 😊",
+                "Valeu pela conversa! Até a próxima! ✨",
+                "Tchau tchau! Volte sempre! 🤗"
+            ]
+            import random
+            return random.choice(responses)
         
         else:
-            return """Desculpe, estou com algumas limitações no momento, mas posso ajudar com:
-
-- 📊 Dados e Relatórios
-- 🔧 Suporte Técnico
-- 📅 Agendamentos
-- 💬 Informações Gerais
-
-Digite "menu" para ver todas as opções ou me diga como posso ajudar!"""
+            # Resposta genérica mais natural
+            responses = [
+                "Hmm, não entendi muito bem... Pode me explicar de outro jeito? 😊",
+                "Opa, acho que não captei. Pode dar mais detalhes?",
+                "Desculpa, não entendi direito. Você quer dados, suporte ou marcar algo?",
+                "Poxa, não peguei bem o que você precisa. Me conta mais?"
+            ]
+            import random
+            return random.choice(responses)
     
     async def classify_intent(self, message: str, session_id: str = None) -> Dict[str, Any]:
         """Classifica intenção com fallback"""
@@ -273,46 +294,24 @@ Responda APENAS em JSON: {"intent": "categoria", "confidence": 0.0-1.0, "reasoni
         """Classificação fallback por palavras-chave"""
         message_lower = message.lower()
         
-        if any(word in message_lower for word in ["oi", "olá", "bom dia", "boa tarde", "boa noite"]):
-            return {"intent": "reception", "confidence": 0.9, "reasoning": "Saudação detectada"}
-        elif any(word in message_lower for word in ["relatório", "dados", "dashboard", "vendas"]):
-            return {"intent": "data_query", "confidence": 0.8, "reasoning": "Consulta de dados"}
-        elif any(word in message_lower for word in ["erro", "problema", "bug", "não funciona"]):
-            return {"intent": "technical_support", "confidence": 0.8, "reasoning": "Problema técnico"}
-        elif any(word in message_lower for word in ["agendar", "reunião", "marcar"]):
-            return {"intent": "scheduling", "confidence": 0.8, "reasoning": "Agendamento"}
+        # Detecção mais natural e abrangente
+        greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "hey", "opa", "e ai", "eai", "fala"]
+        data_keywords = ["relatório", "relatorio", "dados", "dashboard", "vendas", "faturamento", "métrica", "metrica", "kpi", "números", "numeros", "estatística", "estatistica"]
+        support_keywords = ["erro", "problema", "bug", "não funciona", "nao funciona", "travou", "lento", "parou", "ajuda técnica", "suporte"]
+        scheduling_keywords = ["agendar", "marcar", "reunião", "reuniao", "horário", "horario", "calendário", "calendario", "compromisso"]
+        
+        # Classificação com confiança variável
+        if any(word in message_lower for word in greetings):
+            return {"intent": "reception", "confidence": 0.95, "reasoning": "Saudação identificada"}
+        elif any(word in message_lower for word in data_keywords):
+            return {"intent": "data_query", "confidence": 0.85, "reasoning": "Consulta de dados"}
+        elif any(word in message_lower for word in support_keywords):
+            return {"intent": "technical_support", "confidence": 0.85, "reasoning": "Problema técnico"}
+        elif any(word in message_lower for word in scheduling_keywords):
+            return {"intent": "scheduling", "confidence": 0.85, "reasoning": "Agendamento"}
         else:
-            return {"intent": "general_chat", "confidence": 0.5, "reasoning": "Conversa geral"}
-    
-    async def get_service_status(self) -> Dict[str, Any]:
-        """Retorna status do serviço"""
-        status = {
-            "service": "LLM Service",
-            "ollama_url": self.ollama_url,
-            "model": self.model,
-            "status": "offline",
-            "initialized": self.is_initialized,
-            "active_sessions": len(self.memories),
-            "fallback_mode": not self.is_initialized,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        if self.is_initialized and self.session:
-            try:
-                async with self.session.get(
-                    f"{self.ollama_url}/api/tags",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    if response.status == 200:
-                        status["status"] = "online"
-                        data = await response.json()
-                        status["available_models"] = [m.get('name', '') for m in data.get('models', [])]
-                        status["model_available"] = self.model in status["available_models"]
-            except Exception as e:
-                status["status"] = "error"
-                status["error"] = str(e)
-        
-        return status
+            # Se não identificar claramente, vai para recepção para perguntar melhor
+            return {"intent": "reception", "confidence": 0.4, "reasoning": "Intenção não clara"}
     
     def _trim_memory(self, session_id: str, max_messages: int = 10):
         """Mantém apenas as últimas N mensagens"""

@@ -311,20 +311,27 @@ class LangGraphOrchestrator:
     async def _response_formatter_node(self, state: ConversationState) -> ConversationState:
         """Nó formatador de resposta"""
         try:
-            # Adiciona informações de contexto à resposta se necessário
+            # NÃO adiciona rodapé técnico em conversas naturais
             response_text = state["agent_response"].get("text", "")
             
-            # Adiciona rodapé informativo se apropriado
-            if state["current_agent"] != "reception_agent":
-                footer = "\n\n💡 Digite 'menu' para voltar ao início"
-                if footer not in response_text:
-                    response_text += footer
+            # Remove qualquer JSON que possa ter vindo por engano
+            if "{" in response_text and "intent" in response_text:
+                # Tenta extrair apenas o texto útil
+                lines = response_text.split('\n')
+                response_text = '\n'.join([line for line in lines if not line.strip().startswith('{')])
             
-            state["agent_response"]["text"] = response_text
+            # Só adiciona menu em contextos específicos
+            user_input_lower = state["user_input"].lower()
+            agent_id = state["current_agent"]
+            
+            # NÃO adiciona rodapé automático - deixa a conversa fluir naturalmente
+            # O agente já deve incluir sugestões contextuais quando apropriado
+            
+            state["agent_response"]["text"] = response_text.strip()
             
             # Determina se a conversa deve continuar
-            user_input_lower = state["user_input"].lower()
-            if any(word in user_input_lower for word in ["tchau", "sair", "obrigado", "finalizar"]):
+            farewell_words = ["tchau", "até", "adeus", "bye", "xau", "obrigado e tchau", "valeu tchau"]
+            if any(word in user_input_lower for word in farewell_words):
                 state["conversation_complete"] = True
             
         except Exception as e:
