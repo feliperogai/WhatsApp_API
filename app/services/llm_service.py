@@ -325,3 +325,42 @@ Responda APENAS em JSON: {"intent": "categoria", "confidence": 0.0-1.0, "reasoni
         self.memories.clear()
         self.is_initialized = False
         logger.info("LLM Service cleaned up")
+
+    async def get_service_status(self) -> Dict[str, Any]:
+        """Retorna status do serviço LLM"""
+        try:
+            status = {
+                "status": "online" if self.is_initialized else "offline",
+                "ollama_url": self.ollama_url,
+                "model": self.model,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "initialized": self.is_initialized,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Testa conexão com Ollama se inicializado
+            if self.is_initialized and self.session:
+                try:
+                    async with self.session.get(f"{self.ollama_url}/api/tags", timeout=aiohttp.ClientTimeout(total=2)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            models = [m.get('name', '') for m in data.get('models', [])]
+                            status["available_models"] = models
+                            status["model_available"] = self.model in models
+                        else:
+                            status["status"] = "degraded"
+                except Exception as e:
+                    logger.warning(f"Could not check Ollama status: {e}")
+                    status["status"] = "degraded"
+                    status["error"] = str(e)
+            
+            return status
+            
+        except Exception as e:
+            logger.error(f"Error getting service status: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }

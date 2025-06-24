@@ -10,11 +10,10 @@ from datetime import datetime
 
 from app.core.queue_manager import QueueManager, Priority
 from app.core.rate_limiter import AdaptiveRateLimiter
-from app.core.llm_pool import OptimizedLLMService
+from app.services.llm_service import LLMService  # CORREÇÃO: Import correto
 from app.services.message_processor import MessageProcessor
 from app.services.twilio_service import TwilioService
 from app.core.session_manager import SessionManager
-from app.services.llm_service import LLMService
 from app.core.langgraph_orchestrator import LangGraphOrchestrator
 from app.models.message import WhatsAppMessage
 
@@ -44,10 +43,10 @@ async def lifespan(app: FastAPI):
     
     try:
         # Redis connection
-        app_instances["redis"] = redis.from_url(
-            os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-            decode_responses=False
-        )
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        logger.info(f"Connecting to Redis at: {redis_url}")
+        
+        app_instances["redis"] = redis.from_url(redis_url, decode_responses=False)
         await app_instances["redis"].ping()
         logger.info("✅ Redis connected")
         
@@ -73,10 +72,14 @@ async def lifespan(app: FastAPI):
             user_burst=int(os.getenv("USER_BURST", "2"))
         )
         
-        # LLM Service
-        app_instances["llm_service"] = LLMService()
-        await app_instances["llm_service"].initialize()
-        logger.info("✅ LLM Service initialized")
+        # LLM Service - com tratamento de erro melhorado
+        try:
+            app_instances["llm_service"] = LLMService()
+            await app_instances["llm_service"].initialize()
+            logger.info("✅ LLM Service initialized")
+        except Exception as e:
+            logger.error(f"⚠️ LLM Service initialization failed: {e}")
+            logger.warning("Continuing with fallback responses...")
         
         # Twilio Service
         app_instances["twilio_service"] = TwilioService()
@@ -105,22 +108,25 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Jarvis WhatsApp Service started successfully")
         
     except Exception as e:
-        logger.error(f"Failed to start service: {e}")
-        raise
+        logger.error(f"Failed to start service: {e}", exc_info=True)
+        # Não levanta exceção para permitir que o serviço inicie com funcionalidade limitada
     
     yield
     
     # Shutdown
     logger.info("Shutting down Jarvis WhatsApp Service...")
     
-    if app_instances["queue_manager"]:
-        await app_instances["queue_manager"].stop_workers()
-    
-    if app_instances["llm_service"]:
-        await app_instances["llm_service"].cleanup()
-    
-    if app_instances["redis"]:
-        await app_instances["redis"].close()
+    try:
+        if app_instances["queue_manager"]:
+            await app_instances["queue_manager"].stop_workers()
+        
+        if app_instances["llm_service"]:
+            await app_instances["llm_service"].cleanup()
+        
+        if app_instances["redis"]:
+            await app_instances["redis"].close()
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
     
     logger.info("Jarvis WhatsApp Service stopped")
 
@@ -133,96 +139,88 @@ app = FastAPI(
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return HTMLResponse("""
-    <html>
-    <head>
-        <title>Jarvis WhatsApp Service</title>
-        <style>
-            body { 
-                font-family: Arial, sans-serif; 
-                max-width: 800px; 
-                margin: 0 auto; 
-                padding: 20px;
-                background: #1a1a1a;
-                color: #fff;
-            }
-            .status { 
-                background: #2a2a2a; 
-                padding: 20px; 
-                border-radius: 10px; 
-                margin: 20px 0;
-            }
-            .metric {
-                display: inline-block;
-                margin: 10px 20px 10px 0;
-            }
-            .metric .value {
-                font-size: 2em;
-                font-weight: bold;
-                color: #4CAF50;
-            }
-            .endpoint {
-                background: #333;
-                padding: 10px;
-                margin: 5px 0;
-                border-radius: 5px;
-                font-family: monospace;
-            }
-            h1, h2 { color: #4CAF50; }
-            a { color: #4CAF50; text-decoration: none; }
-            a:hover { text-decoration: underline; }
-        </style>
-    </head>
-    <body>
-        <h1>🤖 Jarvis WhatsApp Service v3.0</h1>
-        <p>AI Assistant with Queue Management and LangGraph</p>
+    try:
+        # Verifica status dos componentes
+        redis_status = "🟢 Online" if app_instances.get("redis") else "🔴 Offline"
+        llm_status = "🟢 Online" if app_instances.get("llm_service") and app_instances["llm_service"].is_initialized else "🟡 Fallback Mode"
+        orchestrator_status = "🟢 Online" if app_instances.get("orchestrator") else "🔴 Offline"
         
-        <div class="status">
-            <h2>System Status</h2>
-            <div id="metrics">Loading...</div>
-        </div>
-        
-        <h2>API Endpoints</h2>
-        <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook</div>
-        <div class="endpoint">GET /health - Health check</div>
-        <div class="endpoint">GET /metrics - System metrics</div>
-        <div class="endpoint">GET /llm/status - LLM status</div>
-        
-        <script>
-            async function updateMetrics() {
-                try {
-                    const response = await fetch('/metrics');
-                    const data = await response.json();
-                    
-                    document.getElementById('metrics').innerHTML = `
-                        <div class="metric">
-                            <div>Queue</div>
-                            <div class="value">${data.queue.pending}</div>
-                        </div>
-                        <div class="metric">
-                            <div>Processing</div>
-                            <div class="value">${data.queue.processing}</div>
-                        </div>
-                        <div class="metric">
-                            <div>LLM Status</div>
-                            <div class="value">${data.llm_status || 'N/A'}</div>
-                        </div>
-                        <div class="metric">
-                            <div>Active Sessions</div>
-                            <div class="value">${data.active_sessions || 0}</div>
-                        </div>
-                    `;
-                } catch (e) {
-                    console.error('Failed to update metrics:', e);
-                }
-            }
+        return HTMLResponse(f"""
+        <html>
+        <head>
+            <title>Jarvis WhatsApp Service</title>
+            <style>
+                body {{ 
+                    font-family: Arial, sans-serif; 
+                    max-width: 800px; 
+                    margin: 0 auto; 
+                    padding: 20px;
+                    background: #1a1a1a;
+                    color: #fff;
+                }}
+                .status {{ 
+                    background: #2a2a2a; 
+                    padding: 20px; 
+                    border-radius: 10px; 
+                    margin: 20px 0;
+                }}
+                .metric {{
+                    display: inline-block;
+                    margin: 10px 20px 10px 0;
+                }}
+                .metric .value {{
+                    font-size: 2em;
+                    font-weight: bold;
+                    color: #4CAF50;
+                }}
+                .endpoint {{
+                    background: #333;
+                    padding: 10px;
+                    margin: 5px 0;
+                    border-radius: 5px;
+                    font-family: monospace;
+                }}
+                h1, h2 {{ color: #4CAF50; }}
+                a {{ color: #4CAF50; text-decoration: none; }}
+                a:hover {{ text-decoration: underline; }}
+            </style>
+        </head>
+        <body>
+            <h1>🤖 Jarvis WhatsApp Service v3.0</h1>
+            <p>AI Assistant with Queue Management and LangGraph</p>
             
-            updateMetrics();
-            setInterval(updateMetrics, 5000);
-        </script>
-    </body>
-    </html>
-    """)
+            <div class="status">
+                <h2>System Status</h2>
+                <div class="metric">
+                    <div>Redis</div>
+                    <div class="value">{redis_status}</div>
+                </div>
+                <div class="metric">
+                    <div>LLM Service</div>
+                    <div class="value">{llm_status}</div>
+                </div>
+                <div class="metric">
+                    <div>Orchestrator</div>
+                    <div class="value">{orchestrator_status}</div>
+                </div>
+            </div>
+            
+            <h2>API Endpoints</h2>
+            <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook</div>
+            <div class="endpoint">GET /health - Health check</div>
+            <div class="endpoint">GET /metrics - System metrics</div>
+            <div class="endpoint">GET /llm/status - LLM status</div>
+            
+            <p style="margin-top: 30px;">
+                <a href="/docs">📚 API Documentation</a> | 
+                <a href="/health">🏥 Health Check</a>
+            </p>
+        </body>
+        </html>
+        """)
+    except Exception as e:
+        logger.error(f"Error rendering root page: {e}")
+        return HTMLResponse("<h1>Error loading page</h1>")
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook_sync(
@@ -236,8 +234,16 @@ async def whatsapp_webhook_sync(
     try:
         logger.info(f"📱 Webhook received from {From}: {Body[:50]}...")
         
-        if not app_instances["orchestrator"]:
-            raise HTTPException(status_code=503, detail="Service not ready")
+        # Verifica se o orchestrator está disponível
+        if not app_instances.get("orchestrator"):
+            logger.error("Orchestrator not available")
+            return Response(
+                content='''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>🤖 Ops! O sistema está iniciando. Tente novamente em alguns segundos.</Message>
+</Response>''',
+                media_type="application/xml"
+            )
         
         phone_number = app_instances["twilio_service"].extract_phone_number(From)
         
@@ -249,26 +255,25 @@ async def whatsapp_webhook_sync(
             body=Body
         )
         
-        # Processa através do orchestrator
+        # Processa através do orchestrator com timeout
         try:
-            response = await app_instances["orchestrator"].process_message(message)
+            import asyncio
+            response = await asyncio.wait_for(
+                app_instances["orchestrator"].process_message(message),
+                timeout=25.0  # Timeout de 25 segundos
+            )
             
-            # CORREÇÃO: Usa response_text do AgentResponse
             response_text = response.response_text
+            logger.info(f"✅ Response generated: {response_text[:100]}...")
             
-            # Remove o rodapé técnico se existir
-            if "💡 Digite 'menu'" in response_text:
-                lines = response_text.split('\n')
-                # Remove as últimas linhas que contêm o rodapé
-                response_text = '\n'.join([line for line in lines if "💡 Digite 'menu'" not in line]).strip()
-            
-            logger.info(f"✅ Agent {response.agent_id} generated response: {response_text[:100]}...")
-            
+        except asyncio.TimeoutError:
+            logger.error("Timeout processing message")
+            response_text = "⏱️ Desculpe, estou demorando para processar. Tente novamente!"
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            response_text = "Ops! 😅 Tive um probleminha aqui. Pode repetir sua mensagem?"
+            response_text = "😅 Ops! Tive um probleminha. Pode repetir?"
         
-        # Retorna resposta TwiML formatada
+        # Retorna resposta TwiML
         return Response(
             content=f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -282,7 +287,7 @@ async def whatsapp_webhook_sync(
         return Response(
             content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>Opa! 😊 Parece que algo deu errado por aqui. Que tal tentar de novo em alguns segundinhos?</Message>
+    <Message>🤖 Desculpe, ocorreu um erro. Tente novamente em instantes!</Message>
 </Response>''',
             media_type="application/xml"
         )
@@ -290,25 +295,35 @@ async def whatsapp_webhook_sync(
 @app.get("/health")
 async def health_check():
     try:
-        # Check Redis
-        await app_instances["redis"].ping()
-        
-        # Check LLM
-        llm_status = await app_instances["llm_service"].get_service_status()
-        
-        # Check sessions
-        active_sessions = await app_instances["session_manager"].get_active_sessions_count()
-        
-        return {
+        health_data = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "components": {
-                "redis": "connected",
-                "llm": llm_status.get("status", "unknown"),
-                "sessions": active_sessions,
-                "orchestrator": "active" if app_instances["orchestrator"] else "inactive"
-            }
+            "components": {}
         }
+        
+        # Check Redis
+        try:
+            if app_instances.get("redis"):
+                await app_instances["redis"].ping()
+                health_data["components"]["redis"] = "connected"
+        except:
+            health_data["components"]["redis"] = "disconnected"
+            health_data["status"] = "degraded"
+        
+        # Check LLM
+        if app_instances.get("llm_service"):
+            llm_status = await app_instances["llm_service"].get_service_status()
+            health_data["components"]["llm"] = llm_status.get("status", "unknown")
+        else:
+            health_data["components"]["llm"] = "not_initialized"
+        
+        # Check sessions
+        if app_instances.get("session_manager"):
+            active_sessions = await app_instances["session_manager"].get_active_sessions_count()
+            health_data["components"]["sessions"] = active_sessions
+        
+        return health_data
+        
     except Exception as e:
         logger.error(f"Health check error: {e}")
         return JSONResponse(
@@ -316,36 +331,25 @@ async def health_check():
             content={"status": "unhealthy", "error": str(e)}
         )
 
-@app.get("/metrics")
-async def get_metrics():
-    try:
-        queue_status = await app_instances["queue_manager"].get_status()
-        llm_status = await app_instances["llm_service"].get_service_status()
-        active_sessions = await app_instances["session_manager"].get_active_sessions_count()
-        
-        return {
-            "queue": queue_status,
-            "llm_status": llm_status.get("status", "unknown"),
-            "active_sessions": active_sessions,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Metrics error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/llm/status")
 async def get_llm_status():
     """Endpoint específico para status do LLM"""
     try:
+        if not app_instances.get("llm_service"):
+            return {"status": "not_initialized", "error": "LLM service not available"}
+            
         return await app_instances["llm_service"].get_service_status()
     except Exception as e:
         logger.error(f"LLM status error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "error": str(e)}
 
 @app.post("/llm/test")
 async def test_llm(data: Dict[str, Any]):
     """Testa LLM diretamente"""
     try:
+        if not app_instances.get("llm_service"):
+            return {"error": "LLM service not available"}
+            
         prompt = data.get("prompt", "Olá")
         
         response = await app_instances["llm_service"].generate_response(
@@ -360,67 +364,7 @@ async def test_llm(data: Dict[str, Any]):
         }
     except Exception as e:
         logger.error(f"LLM test error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/analyze/{phone_number}")
-async def analyze_conversation(phone_number: str):
-    """Analisa conversa de um usuário"""
-    try:
-        session = await app_instances["session_manager"].get_session(phone_number)
-        
-        if not session:
-            return {"error": "No session found for this number"}
-        
-        return {
-            "phone_number": phone_number,
-            "session_id": session.session_id,
-            "current_agent": session.current_agent,
-            "message_count": len(session.message_history),
-            "context": session.conversation_context,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.updated_at.isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Analysis error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/suggestions/{phone_number}")
-async def get_suggestions(phone_number: str, context: Optional[str] = None):
-    """Obtém sugestões inteligentes para o usuário"""
-    try:
-        session = await app_instances["session_manager"].get_session(phone_number)
-        
-        if not session:
-            return {"suggestions": ["Olá", "Menu", "Ajuda"]}
-        
-        # Gera sugestões baseadas no contexto
-        prompt = f"""
-        Baseado no contexto da conversa, sugira 3 próximas mensagens que o usuário poderia enviar.
-        Contexto: {context or 'conversa geral'}
-        Agente atual: {session.current_agent or 'reception'}
-        
-        Responda APENAS com uma lista JSON de 3 strings curtas.
-        """
-        
-        suggestions_response = await app_instances["llm_service"].generate_response(
-            prompt=prompt,
-            system_message="Você é um assistente que sugere próximas mensagens.",
-            temperature=0.5
-        )
-        
-        try:
-            # Tenta extrair JSON
-            import json
-            suggestions = json.loads(suggestions_response)
-        except:
-            # Fallback para sugestões padrão
-            suggestions = ["Ver dados", "Preciso de ajuda", "Voltar ao menu"]
-        
-        return {"suggestions": suggestions}
-        
-    except Exception as e:
-        logger.error(f"Suggestions error: {e}")
-        return {"suggestions": ["Menu", "Ajuda", "Sair"]}
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
