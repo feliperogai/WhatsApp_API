@@ -1,8 +1,0 @@
-version: "2"
-authtoken: 2kLiFumK1O1hMYTs8cXwBwFA4NQ_7SVUf5dgTVFFGdXUEP7j5
-tunnels:
-  jarvis-webhook:
-    addr: jarvis-whatsapp:8000
-    proto: http
-    schemes: [https]
-    inspect: false
