@@ -272,9 +272,7 @@ class LLMService:
     def _get_fallback_response(self, prompt: str) -> str:
         """Resposta fallback melhorada quando LLM não está disponível"""
         logger.info(f"🔄 Using fallback response for: {prompt[:50]}...")
-        
         prompt_lower = prompt.lower()
-        
         # Respostas mais naturais e variadas
         greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "hey", "opa", "eae", "e ai"]
         if any(word in prompt_lower for word in greetings):
@@ -287,17 +285,15 @@ class LLMService:
             ]
             import random
             return random.choice(responses)
-        
         elif any(word in prompt_lower for word in ["menu", "opções", "opcoes", "ajuda", "o que você faz", "comandos"]):
             return """Claro! Eu posso te ajudar com várias coisas:
 
-📊 **Dados e Relatórios** - Vendas, métricas, dashboards
-🔧 **Suporte Técnico** - Problemas, erros, dúvidas
-📅 **Agendamentos** - Reuniões, compromissos
-💬 **Bate-papo** - Qualquer outra coisa!
+📊 *Dados e Relatórios* - Vendas, métricas, dashboards
+🛠️ *Suporte Técnico* - Problemas, erros, dúvidas
+📅 *Agendamentos* - Reuniões, compromissos
+💬 *Bate-papo* - Qualquer outra coisa!
 
 O que você precisa? 😊"""
-        
         elif any(word in prompt_lower for word in ["dados", "relatório", "relatorio", "vendas", "dashboard", "métrica", "metrica", "kpi", "analise", "análise"]):
             return """Legal! Vou puxar essas informações pra você! 📊
 
@@ -308,9 +304,8 @@ Você quer ver:
 - Ou algum dado específico?
 
 Me conta o que precisa!"""
-        
         elif any(word in prompt_lower for word in ["erro", "problema", "bug", "não funciona", "nao funciona", "travou", "lento", "falha"]):
-            return """Poxa, que chato! Vamos resolver isso juntos 🔧
+            return """Poxa, que chato! Vamos resolver isso juntos 🛠️
 
 Me conta:
 - O que aconteceu exatamente?
@@ -318,7 +313,6 @@ Me conta:
 - Já tentou reiniciar?
 
 Com essas infos consigo te ajudar melhor!"""
-        
         elif any(word in prompt_lower for word in ["agendar", "marcar", "reunião", "reuniao", "horário", "horario", "agenda"]):
             return """📅 Vamos agendar!
 
@@ -328,7 +322,6 @@ Me diz:
 - Tem horário preferido?
 
 Vou verificar a disponibilidade pra você!"""
-        
         elif any(word in prompt_lower for word in ["obrigado", "obrigada", "valeu", "thanks", "brigado", "agradeço"]):
             responses = [
                 "Por nada! Sempre que precisar, tô aqui! 😊",
@@ -338,7 +331,6 @@ Vou verificar a disponibilidade pra você!"""
             ]
             import random
             return random.choice(responses)
-        
         elif any(word in prompt_lower for word in ["tchau", "até", "ate", "adeus", "bye", "xau", "flw", "falou"]):
             responses = [
                 "Tchau! Foi ótimo falar com você! Até mais! 👋",
@@ -348,10 +340,8 @@ Vou verificar a disponibilidade pra você!"""
             ]
             import random
             return random.choice(responses)
-        
         elif any(word in prompt_lower for word in ["teste", "testando", "test"]):
             return "🧪 Teste recebido! Estou funcionando perfeitamente! Como posso ajudar?"
-        
         else:
             # Resposta genérica mais natural
             responses = [

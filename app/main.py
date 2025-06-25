@@ -330,11 +330,65 @@ async def whatsapp_webhook(
     try:
         # Log detalhado da requisição
         logger.info("="*60)
-        logger.info(f"📱 WEBHOOK RECEIVED")
-        logger.info(f"From: {From}")
-        logger.info(f"Body: {Body}")
-        logger.info(f"MessageSid: {MessageSid}")
+        logger.info(f"📱 MENSAGEM RECEBIDA | From: {From} | Body: {Body} | MessageSid: {MessageSid}")
         logger.info("="*60)
+        
+        body_clean = Body.strip().lower()
+
+        # Resposta para dúvidas sobre serviços ou ajuda
+        if any(keyword in body_clean for keyword in ["serviço", "servicos", "ajuda", "opções", "opcao", "opção"]):
+            menu_text = (
+                "🤖 Eu posso te ajudar com:\n"
+                "1️⃣ Relatórios e Dados\n"
+                "2️⃣ Suporte Técnico\n"
+                "3️⃣ Falar com atendente\n"
+                "Digite o número ou palavra-chave da opção desejada."
+            )
+            logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {menu_text}")
+            return Response(
+                content=f'''<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n    <Message>{menu_text}</Message>\n</Response>''',
+                media_type="application/xml"
+            )
+
+        # Resposta para opções do menu
+        if body_clean in ["1", "relatório", "relatorios", "dados"]:
+            text = "📊 Você escolheu *Relatórios e Dados*. Por favor, diga qual relatório ou dado você deseja consultar."
+            logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {text}")
+            return Response(
+                content=f'''<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n    <Message>{text}</Message>\n</Response>''',
+                media_type="application/xml"
+            )
+
+        if body_clean in ["2", "suporte", "tecnico", "técnico", "problema", "erro"]:
+            text = "🛠️ Você escolheu *Suporte Técnico*. Por favor, descreva o problema que está enfrentando."
+            logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {text}")
+            return Response(
+                content=f'''<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n    <Message>{text}</Message>\n</Response>''',
+                media_type="application/xml"
+            )
+
+        if body_clean in ["3", "atendente", "humano", "falar com atendente"]:
+            text = "👩‍💼 Em breve um atendente humano irá te responder. Por favor, aguarde!"
+            logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {text}")
+            return Response(
+                content=f'''<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n    <Message>{text}</Message>\n</Response>''',
+                media_type="application/xml"
+            )
+
+        # Resposta especial para 'menu'
+        if body_clean in ["menu", "início", "inicio", "voltar", "principal"]:
+            menu_text = (
+                "📋 *Menu Principal*\n"
+                "1️⃣ Relatórios e Dados\n"
+                "2️⃣ Suporte Técnico\n"
+                "3️⃣ Falar com atendente\n"
+                "Digite o número ou palavra-chave da opção desejada."
+            )
+            logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {menu_text}")
+            return Response(
+                content=f'''<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Response>\n    <Message>{menu_text}</Message>\n</Response>''',
+                media_type="application/xml"
+            )
         
         # Verifica componentes essenciais
         if not app_instances.get("orchestrator"):
@@ -410,22 +464,19 @@ async def whatsapp_webhook(
     <Message>{response_text}</Message>
 </Response>'''
         
-        logger.info(f"📤 Sending TwiML response (length: {len(twiml_response)})")
-        
+        logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {response_text}")
         return Response(
             content=twiml_response,
             media_type="application/xml"
         )
         
     except Exception as e:
-        logger.critical(f"💥 CRITICAL WEBHOOK ERROR: {type(e).__name__} - {str(e)}")
+        logger.critical(f"💥 CRITICAL WEBHOOK ERROR: {type(e).__name__} - {str(e)} | From: {From} | Body: {Body}")
         logger.critical(traceback.format_exc())
-        
+        error_text = "🆘 Erro crítico no sistema. Por favor, tente novamente mais tarde."
+        logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {error_text}")
         return Response(
-            content='''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>🆘 Erro crítico no sistema. Por favor, tente novamente mais tarde.</Message>
-</Response>''',
+            content=f'''<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n    <Message>{error_text}</Message>\n</Response>''',
             media_type="application/xml"
         )
 
