@@ -39,17 +39,17 @@ class LLMBaseAgent(BaseAgent):
     
     async def can_handle(self, message: WhatsAppMessage, session: UserSession) -> bool:
         """Usa LLM para determinar se pode processar a mensagem"""
-        
+        if session is None:
+            logger.error(f"[Agent {self.agent_id}] Session is None para {message.from_number}")
+            return False
         # Se é o agente ativo na sessão
         if session.current_agent == self.agent_id:
             return True
-        
-        # Usa LLM para classificar
-        classification = await self.llm_service.classify_intent(
-            message.body or "", 
-            session.session_id
+        # Usa LLM para classificar (agora síncrono)
+        classification = self.llm_service.classify_intent(
+            message.body or ""
         )
-        
+        logger.info(f"[Agent {self.agent_id}] Intent classified as: {classification}")
         # Verifica se a intenção é compatível
         return self._is_intent_compatible(classification.get("intent", ""))
     
@@ -60,7 +60,16 @@ class LLMBaseAgent(BaseAgent):
     
     async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
         """Processa mensagem usando LLM"""
-        
+        if session is None:
+            logger.error(f"[Agent {self.agent_id}] Session is None para {message.from_number}")
+            return AgentResponse(
+                agent_id=self.agent_id,
+                response_text="Desculpe, não consegui acessar sua sessão. Por favor, tente novamente ou envie 'menu'.",
+                confidence=0.0,
+                should_continue=False,
+                next_agent="reception_agent",
+                metadata={"error": "Session is None"}
+            )
         try:
             # Constrói contexto
             context = self._build_context(message, session)

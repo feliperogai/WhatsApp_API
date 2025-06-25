@@ -270,146 +270,144 @@ class LLMService:
             return self._get_fallback_response(prompt)
     
     def _get_fallback_response(self, prompt: str) -> str:
-        """Resposta fallback melhorada quando LLM não está disponível"""
+        """Resposta fallback natural e variada quando LLM não está disponível"""
         logger.info(f"🔄 Using fallback response for: {prompt[:50]}...")
         prompt_lower = prompt.lower()
-        # Respostas mais naturais e variadas
-        greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "hey", "opa", "eae", "e ai"]
+        import random
+        
+        # Respostas mais naturais e variadas por categoria
+        
+        # Saudações
+        greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "hey", "opa", "eae", "e ai", "fala", "salve"]
         if any(word in prompt_lower for word in greetings):
             responses = [
-                "Oi! Tudo bem? 😊 Como posso te ajudar hoje?",
-                "Opa! Que bom te ver por aqui! O que você precisa?",
-                "Oi oi! Como você tá? Precisa de alguma coisa?",
-                "Hey! Tudo certo? Me conta como posso ajudar!",
-                "Olá! Seja bem-vindo(a)! Em que posso ser útil?"
+                "Opa! E aí, tudo bem? 😊",
+                "Oi oi! Como você tá?",
+                "Fala! Tudo certo aí?",
+                "Hey! Que bom te ver por aqui!",
+                "Oi! Tava esperando você aparecer! Como tá?",
+                "E aí! Beleza? Como posso ajudar?",
+                "Salve! Tudo tranquilo?",
+                "Olá! Como tá seu dia hoje?",
+                "Opa, tudo bem? Que legal você por aqui!"
             ]
-            import random
+            # Para horários específicos
+            from datetime import datetime
+            hour = datetime.now().hour
+            if 5 <= hour < 12 and "bom dia" in prompt_lower:
+                responses.extend([
+                    "Bom dia! Acordou cedo hein! Como tá?",
+                    "Bom dia! ☀️ Já tomou café?",
+                    "Bom dia! Que seu dia seja incrível!"
+                ])
+            elif 12 <= hour < 18 and "boa tarde" in prompt_lower:
+                responses.extend([
+                    "Boa tarde! Como foi sua manhã?",
+                    "Boa tarde! Tá calor aí?",
+                    "Boa tarde! Já almoçou?"
+                ])
+            elif "boa noite" in prompt_lower:
+                responses.extend([
+                    "Boa noite! Como foi seu dia?",
+                    "Boa noite! 🌙 Tudo bem?",
+                    "Boa noite! Ainda trabalhando?"
+                ])
             return random.choice(responses)
-        elif any(word in prompt_lower for word in ["menu", "opções", "opcoes", "ajuda", "o que você faz", "comandos"]):
-            return """Claro! Eu posso te ajudar com várias coisas:
-
-📊 *Dados e Relatórios* - Vendas, métricas, dashboards
-🛠️ *Suporte Técnico* - Problemas, erros, dúvidas
-📅 *Agendamentos* - Reuniões, compromissos
-💬 *Bate-papo* - Qualquer outra coisa!
-
-O que você precisa? 😊"""
-        elif any(word in prompt_lower for word in ["dados", "relatório", "relatorio", "vendas", "dashboard", "métrica", "metrica", "kpi", "analise", "análise"]):
-            return """Legal! Vou puxar essas informações pra você! 📊
-
-Você quer ver:
-- Vendas do mês?
-- Comparativo com mês anterior?
-- Performance geral?
-- Ou algum dado específico?
-
-Me conta o que precisa!"""
-        elif any(word in prompt_lower for word in ["erro", "problema", "bug", "não funciona", "nao funciona", "travou", "lento", "falha"]):
-            return """Poxa, que chato! Vamos resolver isso juntos 🛠️
-
-Me conta:
-- O que aconteceu exatamente?
-- Quando começou o problema?
-- Já tentou reiniciar?
-
-Com essas infos consigo te ajudar melhor!"""
-        elif any(word in prompt_lower for word in ["agendar", "marcar", "reunião", "reuniao", "horário", "horario", "agenda"]):
-            return """📅 Vamos agendar!
-
-Me diz:
-- Que tipo de compromisso?
-- Qual dia seria melhor?
-- Tem horário preferido?
-
-Vou verificar a disponibilidade pra você!"""
-        elif any(word in prompt_lower for word in ["obrigado", "obrigada", "valeu", "thanks", "brigado", "agradeço"]):
+        
+        # Pedidos de ajuda/serviços
+        elif any(word in prompt_lower for word in ["ajuda", "ajudar", "serviço", "serviços", "o que você faz", "pode fazer", "consegue"]):
             responses = [
-                "Por nada! Sempre que precisar, tô aqui! 😊",
-                "Imagina! Foi um prazer ajudar! 🤗",
-                "Que isso! Conta comigo sempre! ✨",
-                "De nada! Volte sempre que precisar!"
+                "Claro! Eu ajudo com várias coisas: relatórios, dados da empresa, problemas técnicos, agendamentos... O que você precisa?",
+                "Opa, tô aqui pra isso! Posso puxar relatórios, resolver problemas técnicos, marcar reuniões... Me conta o que precisa!",
+                "Ah, eu faço um monte de coisa! Dados, suporte, agenda... Mas me diz, o que tá precisando agora?",
+                "Consigo te ajudar com relatórios e dados, resolver problemas técnicos, organizar agenda... O que seria bom pra você?"
             ]
-            import random
             return random.choice(responses)
-        elif any(word in prompt_lower for word in ["tchau", "até", "ate", "adeus", "bye", "xau", "flw", "falou"]):
+        
+        # Menu (pessoa insiste em formato menu)
+        elif "menu" in prompt_lower:
             responses = [
-                "Tchau! Foi ótimo falar com você! Até mais! 👋",
-                "Até logo! Se cuida! 😊",
-                "Valeu pela conversa! Até a próxima! ✨",
-                "Tchau tchau! Volte sempre! 🤗"
+                "Então, não tenho bem um 'menu' haha, mas posso te ajudar com dados e relatórios, problemas técnicos, agendamentos... O que você precisa?",
+                "Menu? 😄 Bom, eu ajudo com relatórios da empresa, suporte técnico, marco reuniões... Qual dessas coisas você tá precisando?",
+                "Hmm menu... Deixa eu pensar! Faço relatórios, resolvo bugs, organizo agenda... Te interessa alguma coisa específica?"
             ]
-            import random
             return random.choice(responses)
+        
+        # Dados/Relatórios
+        elif any(word in prompt_lower for word in ["dados", "relatório", "relatorio", "vendas", "dashboard", "métrica", "kpi"]):
+            responses = [
+                "Ah, você quer ver dados! Legal! Me conta mais: vendas, clientes, performance... O que seria útil pra você?",
+                "Show! Adoro mostrar números! 📊 Quer ver vendas? Clientes? Ou alguma métrica específica?",
+                "Opa, vamos aos dados! O que você quer saber? Vendas do mês? Comparativo? Performance?",
+                "Relatórios! Boa! Temos várias opções... Vendas, clientes, KPIs... Por onde quer começar?"
+            ]
+            return random.choice(responses)
+        
+        # Problemas técnicos
+        elif any(word in prompt_lower for word in ["erro", "problema", "bug", "não funciona", "travou", "lento"]):
+            responses = [
+                "Eita, que chato! Me conta direitinho o que tá acontecendo que eu te ajudo!",
+                "Poxa, problema técnico é fogo! O que tá dando erro aí?",
+                "Xiii, vamos resolver isso! Me explica o que aconteceu?",
+                "Problema? Calma que a gente resolve! O que tá pegando?"
+            ]
+            return random.choice(responses)
+        
+        # Agendamentos
+        elif any(word in prompt_lower for word in ["agendar", "marcar", "reunião", "horário", "agenda"]):
+            responses = [
+                "Beleza! Vamos marcar! Que tipo de compromisso você quer agendar?",
+                "Show! Me conta: é reunião? Call? Presencial? Quando seria bom?",
+                "Opa, vamos organizar sua agenda! O que precisa marcar?",
+                "Legal! Agendamento! É reunião de trabalho? Me dá mais detalhes!"
+            ]
+            return random.choice(responses)
+        
+        # Agradecimentos
+        elif any(word in prompt_lower for word in ["obrigado", "obrigada", "valeu", "thanks", "agradeço"]):
+            responses = [
+                "Imagina! Sempre que precisar! 😊",
+                "Por nada! Foi um prazer!",
+                "Que isso! Tamo junto! 🤝",
+                "De nada! Conta comigo!",
+                "Valeu você! Fico feliz em ajudar!",
+                "Nada! Precisando, só chamar!"
+            ]
+            return random.choice(responses)
+        
+        # Despedidas
+        elif any(word in prompt_lower for word in ["tchau", "até", "adeus", "bye", "xau", "flw", "falou"]):
+            responses = [
+                "Tchau! Foi ótimo falar com você! 👋",
+                "Até mais! Se cuida!",
+                "Falou! Boa sorte aí! ✨",
+                "Tchau tchau! Aparece mais!",
+                "Até! Qualquer coisa me chama!",
+                "Valeu pela conversa! Até a próxima!"
+            ]
+            return random.choice(responses)
+        
+        # Teste
         elif any(word in prompt_lower for word in ["teste", "testando", "test"]):
-            return "🧪 Teste recebido! Estou funcionando perfeitamente! Como posso ajudar?"
-        else:
-            # Resposta genérica mais natural
             responses = [
-                "Hmm, não entendi muito bem... Pode me explicar de outro jeito? 😊",
-                "Opa, acho que não captei. Pode dar mais detalhes?",
-                "Desculpa, não entendi direito. Você quer dados, suporte ou marcar algo?",
-                "Poxa, não peguei bem o que você precisa. Me conta mais?",
-                "Interessante! Mas não entendi completamente. Pode elaborar um pouco mais?"
+                "Recebi seu teste! Tá tudo funcionando! 🧪",
+                "Teste recebido! Tô aqui, pode falar!",
+                "Testando 1, 2, 3... Tá me ouvindo bem? 😄"
             ]
-            import random
             return random.choice(responses)
-    
-    async def classify_intent(self, message: str, session_id: str = None) -> Dict[str, Any]:
-        """Classifica intenção com fallback robusto"""
-        logger.debug(f"🎯 Classifying intent for: {message[:50]}...")
         
-        if self.is_initialized and self.session:
-            system_prompt = """Você é um classificador de intenções. Analise a mensagem e classifique em uma destas categorias:
-- "reception": saudações, cumprimentos, despedidas
-- "data_query": dados, relatórios, métricas, análises
-- "technical_support": problemas, erros, bugs, suporte
-- "scheduling": agendamentos, reuniões, calendário
-- "general_chat": outros assuntos
-
-Responda APENAS em JSON: {"intent": "categoria", "confidence": 0.0-1.0, "reasoning": "breve explicação"}"""
-
-            try:
-                response = await self.generate_response(
-                    f"Classifique esta mensagem: '{message}'",
-                    system_prompt,
-                    session_id,
-                    temperature=0.3,
-                    max_tokens=150
-                )
-                
-                logger.debug(f"Classification response: {response}")
-                
-                # Tenta extrair JSON da resposta
-                response = response.strip()
-                
-                # Remove formatação markdown se houver
-                if "```json" in response:
-                    response = response.split("```json")[1].split("```")[0].strip()
-                elif "```" in response:
-                    response = response.split("```")[1].split("```")[0].strip()
-                
-                # Encontra o JSON na resposta
-                start = response.find('{')
-                end = response.rfind('}') + 1
-                
-                if start != -1 and end > start:
-                    json_str = response[start:end]
-                    result = json.loads(json_str)
-                    
-                    # Valida estrutura
-                    if all(key in result for key in ["intent", "confidence"]):
-                        result["confidence"] = float(result["confidence"])
-                        logger.info(f"✅ Intent classified: {result['intent']} (confidence: {result['confidence']})")
-                        return result
-                
-                logger.warning("Failed to parse LLM classification response, using fallback")
-                        
-            except Exception as e:
-                logger.error(f"❌ Erro na classificação LLM: {type(e).__name__}: {str(e)}")
-        
-        # Fallback com classificação por palavras-chave
-        logger.info("🔄 Using keyword-based classification")
-        return self._classify_by_keywords(message)
+        # Respostas genéricas (não entendeu)
+        else:
+            responses = [
+                "Hmm, não entendi bem... Pode me explicar melhor?",
+                "Opa, acho que não captei. Pode falar de outro jeito?",
+                "Desculpa, não peguei essa. Me conta mais?",
+                "Putz, não entendi direito. Você quer dados, suporte ou marcar algo?",
+                "Eita, me perdi aqui! 😅 Pode repetir?",
+                "Não entendi muito bem, mas tô aqui pra ajudar! Me explica melhor?",
+                f"Interessante você falar sobre '{prompt[:30]}{'...' if len(prompt) > 30 else ''}'. Mas não entendi o que precisa. Pode elaborar?"
+            ]
+            return random.choice(responses)
     
     def _classify_by_keywords(self, message: str) -> Dict[str, Any]:
         """Classificação fallback por palavras-chave melhorada"""
@@ -539,3 +537,7 @@ Responda APENAS em JSON: {"intent": "categoria", "confidence": 0.0-1.0, "reasoni
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
+
+    def classify_intent(self, message: str) -> Dict[str, Any]:
+        """Classifica a intenção da mensagem usando palavras-chave (público para orquestrador)"""
+        return self._classify_by_keywords(message)

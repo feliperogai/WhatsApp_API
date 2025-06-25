@@ -153,17 +153,20 @@ class LangGraphOrchestrator:
     
     async def _reception_node(self, state: ConversationState) -> ConversationState:
         """Nó do agente de recepção"""
+        import traceback
+        logger.info(f"[ReceptionNode] Iniciando processamento para {state['phone_number']} | input: {state['user_input']}")
         try:
             session = await self.session_manager.get_session(state["phone_number"])
+            if session is None:
+                logger.warning(f"[ReceptionNode] Nenhuma sessão encontrada para {state['phone_number']}. Criando nova sessão.")
+                session = await self.session_manager.get_or_create_session(state["phone_number"])
             message = WhatsAppMessage(
                 message_id=f"msg_{datetime.now().timestamp()}",
                 from_number=state["phone_number"],
                 to_number="system",
                 body=state["user_input"]
             )
-            
             response = await self.agents["reception_agent"].process_message(message, session)
-            
             state["agent_response"] = {
                 "text": response.response_text,
                 "confidence": response.confidence,
@@ -171,11 +174,12 @@ class LangGraphOrchestrator:
                 "metadata": response.metadata
             }
             state["current_agent"] = "reception_agent"
-            
+            logger.info(f"[ReceptionNode] Resposta gerada: {response.response_text}")
         except Exception as e:
             logger.error(f"Reception node error: {e}")
-            state["agent_response"] = {"text": "Erro na recepção", "confidence": 0.0}
-        
+            logger.error(traceback.format_exc())
+            fallback = "Oi! Tive um probleminha aqui, mas já estou pronto para te ajudar. Pode repetir sua mensagem ou digitar 'menu' para ver opções."
+            state["agent_response"] = {"text": fallback, "confidence": 0.0}
         return state
     
     async def _classification_node(self, state: ConversationState) -> ConversationState:
