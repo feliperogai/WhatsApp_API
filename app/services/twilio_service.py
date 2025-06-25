@@ -1,73 +1,84 @@
-twilio_service_py = ""
+# app/services/twilio_service_fix.py
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 import logging
 from typing import Optional, Dict, Any
-from app.config.settings import settings
+import os
 
 logger = logging.getLogger(__name__)
 
 class TwilioService:
     def __init__(self):
-        self.client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
-        self.phone_number = settings.twilio_phone_number
+        # Carrega configurações
+        self.account_sid = os.getenv('TWILIO_ACCOUNT_SID')
+        self.auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+        self.phone_number = os.getenv('TWILIO_PHONE_NUMBER')
+        
+        # Validação
+        if not all([self.account_sid, self.auth_token, self.phone_number]):
+            logger.error("Twilio credentials not properly configured!")
+            logger.error(f"SID: {'✓' if self.account_sid else '✗'}")
+            logger.error(f"Token: {'✓' if self.auth_token else '✗'}")
+            logger.error(f"Phone: {'✓' if self.phone_number else '✗'}")
+            raise ValueError("Missing Twilio credentials")
+        
+        # Inicializa cliente
+        self.client = Client(self.account_sid, self.auth_token)
+        logger.info(f"TwilioService initialized with phone: {self.phone_number}")
         
     async def send_message(self, to_number: str, message: str, media_url: Optional[str] = None) -> bool:
+        """Envia mensagem WhatsApp"""
         try:
-            # Formata número para WhatsApp
-            whatsapp_to = f"whatsapp:{to_number}"
-            whatsapp_from = f"whatsapp:{self.phone_number}"
+            # Formata números
+            if not to_number.startswith('whatsapp:'):
+                whatsapp_to = f"whatsapp:{to_number}"
+            else:
+                whatsapp_to = to_number
+                
+            if not self.phone_number.startswith('whatsapp:'):
+                whatsapp_from = f"whatsapp:{self.phone_number}"
+            else:
+                whatsapp_from = self.phone_number
             
+            logger.info(f"Sending WhatsApp message from {whatsapp_from} to {whatsapp_to}")
+            
+            # Envia mensagem
             message_params = {
                 'body': message,
                 'from_': whatsapp_from,
                 'to': whatsapp_to
             }
             
-            # Adiciona mídia se fornecida
             if media_url:
                 message_params['media_url'] = [media_url]
             
+            # Envia de forma síncrona (Twilio SDK não é async)
             message_obj = self.client.messages.create(**message_params)
             
-            logger.info(f"Message sent to {to_number}, SID: {message_obj.sid}")
+            logger.info(f"✅ Message sent successfully! SID: {message_obj.sid}")
+            logger.info(f"Status: {message_obj.status}")
+            
             return True
             
         except Exception as e:
-            logger.error(f"Error sending message to {to_number}: {str(e)}")
+            logger.error(f"❌ Error sending WhatsApp message: {str(e)}")
+            logger.error(f"To: {to_number}, Message: {message[:50]}...")
             return False
     
     def create_webhook_response(self, response_text: str, media_url: Optional[str] = None) -> str:
-        resp = MessagingResponse()
-        message = resp.message(response_text)
-        
-        if media_url:
-            message.media(media_url)
-        
-        return str(resp)
-    
-    async def validate_webhook(self, request_data: Dict[str, Any]) -> bool:
+        """Cria resposta TwiML para webhook"""
         try:
-            # Aqui você pode adicionar validação de assinatura Twilio
-            required_fields = ['From', 'Body', 'MessageSid']
-            return all(field in request_data for field in required_fields)
+            resp = MessagingResponse()
+            msg = resp.message(response_text)
+            
+            if media_url:
+                msg.media(media_url)
+            
+            xml_response = str(resp)
+            logger.debug(f"TwiML Response: {xml_response}")
+            return xml_response
+            
         except Exception as e:
-            logger.error(f"Webhook validation error: {e}")
-            return False
-    
-    def extract_phone_number(self, from_field: str) -> str:
-        # Remove prefixo 'whatsapp:'
-        return from_field.replace('whatsapp:', '') if from_field.startswith('whatsapp:') else from_field
-    
-    async def get_account_info(self) -> Dict[str, Any]:
-        try:
-            account = self.client.api.accounts(settings.twilio_account_sid).fetch()
-            return {
-                'account_sid': account.sid,
-                'friendly_name': account.friendly_name,
-                'status': account.status,
-                'type': account.type
-            }
-        except Exception as e:
-            logger.error(f"Error fetching account info: {e}")
-            return {} 
+            logger.error(f"Error creating TwiML response: {e}")
+            # Retorna resposta mínima válida
+            return '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Erro no sistema</Message></Response>'

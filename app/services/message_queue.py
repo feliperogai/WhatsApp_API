@@ -442,3 +442,8 @@ class PriorityMessageQueue(MessageQueue):
         except Exception as e:
             logger.error(f"Erro ao contar mensagens do usuário: {e}")
             return 0
+
+    def extract_phone_number(self, from_field: str) -> str:
+        if from_field.startswith('whatsapp:'):
+            return from_field[9:]
+        return from_field

@@ -240,7 +240,18 @@ async def whatsapp_webhook_sync(
             return Response(
                 content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>🤖 Ops! O sistema está iniciando. Tente novamente em alguns segundos.</Message>
+    <Message>🤖 Sistema iniciando. Tente novamente em 10 segundos.</Message>
+</Response>''',
+                media_type="application/xml"
+            )
+        
+        # Verifica se LLM está inicializado
+        if not app_instances.get("llm_service") or not app_instances["llm_service"].is_initialized:
+            logger.error("LLM Service not initialized")
+            return Response(
+                content='''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>🤖 Sistema de IA em manutenção. Tente novamente em breve.</Message>
 </Response>''',
                 media_type="application/xml"
             )
@@ -255,12 +266,12 @@ async def whatsapp_webhook_sync(
             body=Body
         )
         
-        # Processa através do orchestrator com timeout
+        # Processa através do orchestrator com timeout MENOR
         try:
             import asyncio
             response = await asyncio.wait_for(
                 app_instances["orchestrator"].process_message(message),
-                timeout=25.0  # Timeout de 25 segundos
+                timeout=20.0  # Reduzido de 25 para 20 segundos
             )
             
             response_text = response.response_text
@@ -268,10 +279,24 @@ async def whatsapp_webhook_sync(
             
         except asyncio.TimeoutError:
             logger.error("Timeout processing message")
-            response_text = "⏱️ Desculpe, estou demorando para processar. Tente novamente!"
+            response_text = "⏱️ Desculpe, estou processando muitas mensagens. Tente novamente!"
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            response_text = "😅 Ops! Tive um probleminha. Pode repetir?"
+            
+            # Log mais detalhado do erro
+            error_details = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "phone": phone_number,
+                "message": Body[:100]
+            }
+            logger.error(f"Error details: {json.dumps(error_details)}")
+            
+            # Mensagem de erro mais específica
+            if "connection" in str(e).lower() or "ollama" in str(e).lower():
+                response_text = "🤖 Estou com problemas para conectar ao meu cérebro. Nosso time foi notificado!"
+            else:
+                response_text = "😅 Ops! Algo deu errado. Pode tentar de novo?"
         
         # Retorna resposta TwiML
         return Response(
@@ -283,11 +308,15 @@ async def whatsapp_webhook_sync(
         )
         
     except Exception as e:
-        logger.error(f"Webhook error: {e}", exc_info=True)
+        logger.error(f"Critical webhook error: {e}", exc_info=True)
+        
+        # Log crítico
+        logger.critical(f"WEBHOOK FAILED COMPLETELY: {type(e).__name__} - {str(e)}")
+        
         return Response(
             content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>🤖 Desculpe, ocorreu um erro. Tente novamente em instantes!</Message>
+    <Message>🤖 Desculpe, ocorreu um erro crítico. Por favor, tente novamente em alguns minutos.</Message>
 </Response>''',
             media_type="application/xml"
         )
