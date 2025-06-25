@@ -157,15 +157,20 @@ class LangGraphOrchestrator:
         logger.info(f"[ReceptionNode] Iniciando processamento para {state['phone_number']} | input: {state['user_input']}")
         try:
             session = await self.session_manager.get_session(state["phone_number"])
+            logger.info(f"[ReceptionNode] Sessão recuperada: {session}")
+            logger.info(f"[ReceptionNode] Conteúdo da sessão: {session.__dict__ if session else 'None'}")
+            logger.info(f"[ReceptionNode] Estado recebido: {state}")
             if session is None:
                 logger.warning(f"[ReceptionNode] Nenhuma sessão encontrada para {state['phone_number']}. Criando nova sessão.")
                 session = await self.session_manager.get_or_create_session(state["phone_number"])
+                logger.info(f"[ReceptionNode] Nova sessão criada: {session.__dict__}")
             message = WhatsAppMessage(
                 message_id=f"msg_{datetime.now().timestamp()}",
                 from_number=state["phone_number"],
                 to_number="system",
                 body=state["user_input"]
             )
+            logger.info(f"[ReceptionNode] Mensagem criada: {message.__dict__}")
             response = await self.agents["reception_agent"].process_message(message, session)
             state["agent_response"] = {
                 "text": response.response_text,

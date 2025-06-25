@@ -117,16 +117,16 @@ async def lifespan(app: FastAPI):
             logger.error(f"❌ Twilio Service initialization failed: {e}")
             raise
         
-        # LangGraph Orchestrator - só inicializa se LLM estiver OK
-        if app_instances["llm_service"]:
-            try:
-                app_instances["orchestrator"] = LangGraphOrchestrator(
-                    app_instances["session_manager"],
-                    app_instances["llm_service"]
-                )
-                logger.info("✅ LangGraph Orchestrator initialized")
-            except Exception as e:
-                logger.error(f"❌ Orchestrator initialization failed: {e}")
+        # LangGraph Orchestrator - inicializa SEMPRE, mesmo se LLM estiver em fallback
+        try:
+            app_instances["orchestrator"] = LangGraphOrchestrator(
+                app_instances["session_manager"],
+                app_instances["llm_service"]
+            )
+            logger.info("✅ LangGraph Orchestrator initialized (modo normal ou fallback)")
+        except Exception as e:
+            logger.error(f"❌ Orchestrator initialization failed: {e}")
+            app_instances["orchestrator"] = None
         
         # Message Processor
         if app_instances["orchestrator"]:
@@ -326,35 +326,42 @@ async def root():
         return HTMLResponse("<h1>Error loading page</h1>")
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(
-    request: Request,
-    From: str = Form(None),
-    Body: str = Form(None),
-    MessageSid: str = Form(None)
-):
-    """
-    Webhook principal para processar mensagens do WhatsApp
-    TODAS as mensagens são processadas pelo LLM para conversas naturais
-    """
-    # Log detalhado da requisição recebida
+async def whatsapp_webhook(request: Request):
+    # Loga corpo bruto e headers
+    raw_body = await request.body()
+    print("="*60)
+    print(">>> RAW BODY RECEBIDO <<<")
+    print(raw_body)
+    print(">>> HEADERS <<<")
+    print(request.headers)
+    print("="*60)
+    # Extrai campos do form ou do json
+    From = Body = MessageSid = None
+    data = {}
     try:
         data = await request.form()
-        logger.info(f"[Webhook] Dados recebidos (form): {dict(data)}")
+        From = data.get("From")
+        Body = data.get("Body")
+        MessageSid = data.get("MessageSid")
+        print(f"[Webhook] Dados recebidos (form): {dict(data)}")
     except Exception as e:
-        logger.warning(f"[Webhook] Não foi possível ler como form: {e}")
+        print(f"[Webhook] Não foi possível ler como form: {e}")
         try:
             data = await request.json()
-            logger.info(f"[Webhook] Dados recebidos (json): {data}")
+            From = data.get("From")
+            Body = data.get("Body")
+            MessageSid = data.get("MessageSid")
+            print(f"[Webhook] Dados recebidos (json): {data}")
         except Exception as e2:
-            logger.error(f"[Webhook] Não foi possível ler como json: {e2}")
+            print(f"[Webhook] Não foi possível ler como json: {e2}")
             data = {}
     # Se algum campo obrigatório não veio, retorna erro detalhado
     missing = []
-    for field in ["From", "Body", "MessageSid"]:
-        if locals().get(field) is None:
+    for field, value in [("From", From), ("Body", Body), ("MessageSid", MessageSid)]:
+        if value is None:
             missing.append(field)
     if missing:
-        logger.error(f"[Webhook] Campos obrigatórios ausentes: {missing}")
+        print(f"[Webhook] Campos obrigatórios ausentes: {missing}")
         return JSONResponse(status_code=422, content={"error": "Campos obrigatórios ausentes", "missing": missing, "received": dict(data)})
     
     # Loga status do LLMService
@@ -752,6 +759,16 @@ async def test_session_creation():
         
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}
+
+@app.get("/debug/llm")
+async def debug_llm():
+    llm_service = app_instances.get("llm_service")
+    orchestrator = app_instances.get("orchestrator")
+    status = {
+        "llm_service": await llm_service.get_service_status() if llm_service else "not initialized",
+        "orchestrator": "initialized" if orchestrator else "not initialized"
+    }
+    return status
 
 if __name__ == "__main__":
     import uvicorn
