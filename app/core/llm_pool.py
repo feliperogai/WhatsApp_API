@@ -191,7 +191,7 @@ class LLMCache:
     
     async def warm_up(self, common_prompts: List[Tuple[str, str]]):
         for prompt, response in common_prompts:
-            key = self._generate_key(prompt, "", "llama3.1:8b", 0.7)
+            key = self._generate_key(prompt, "", "llama3:latest", 0.7)
             await self.redis.setex(key, self.ttl * 2, response)
         
         logger.info(f"Warmed up cache with {len(common_prompts)} common prompts")
@@ -208,7 +208,7 @@ class OptimizedLLMService:
     ):
         self.pool = LLMPool(base_urls, models, pool_size)
         self.cache = LLMCache(redis_client, cache_ttl, max_cache_size)
-        self.default_model = models[0] if models else "llama3.1:8b"
+        self.default_model = models[0] if models else "llama3:latest"
         self.context_memory: Dict[str, List[Dict[str, str]]] = {}
         self.max_context_size = 10
     

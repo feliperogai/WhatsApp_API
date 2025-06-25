@@ -334,7 +334,7 @@ class TestLLMCacheService:
             key="test_key",
             prompt=prompt,
             response=response,
-            model="llama3.1:8b",
+            model="llama3:latest",
             temperature=0.7,
             created_at=datetime.now()
         )

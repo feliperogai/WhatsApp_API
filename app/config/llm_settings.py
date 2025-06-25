@@ -25,7 +25,7 @@ class LLMSettings(BaseSettings):
     
     # Available Models
     available_models: List[str] = [
-        "llama3.1:8b",
+        "llama3:latest",
         "llama3.1:70b", 
         "qwen2.5:7b",
         "mistral:7b",

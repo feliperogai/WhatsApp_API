@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     
     # LLM
     ollama_urls: List[str] = ["http://localhost:11434"]
-    ollama_models: List[str] = ["llama3.1:8b"]
+    ollama_models: List[str] = ["llama3:latest"]
     llm_pool_size: int = 2
     llm_timeout: int = 30
     
