@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import List, Optional
 import os
 
@@ -37,17 +38,11 @@ class Settings(BaseSettings):
     environment: str = "production"
     log_level: str = "INFO"
     port: int = 8000
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        
-        @classmethod
-        def parse_env_var(cls, field_name: str, raw_val: str):
-            if field_name in ["ollama_urls", "ollama_models"]:
-                return raw_val.split(",")
-            elif field_name == "retry_delays":
-                return [int(x) for x in raw_val.split(",")]
-            return raw_val
+
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="allow"
+    )
 
 settings = Settings()

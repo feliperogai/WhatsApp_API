@@ -162,14 +162,14 @@ class LLMSupportAgent(LLMBaseAgent):
             "issue_type": issue_type,
             "priority": priority,
             "user_message": message.body,
-            "system_status": get_system_status(),
-            "knowledge_base_search": search_knowledge_base(user_input),
-            "support_tools": [tool.__name__ for tool in self._get_tools()]
+            "system_status": get_system_status.invoke({}),
+            "knowledge_base_search": search_knowledge_base.invoke({"query": user_input}),
+            "support_tools": [type(tool).__name__ for tool in self._get_tools()]
         }
         
         # Cria ticket automaticamente para problemas críticos
         if priority == "critical":
-            ticket = create_support_ticket(message.body or "Problema crítico", "critical")
+            ticket = create_support_ticket.invoke({"description": message.body or "Problema crítico", "priority": "critical"})
             additional_context["auto_ticket"] = ticket
         
         # Atualiza contexto da sessão
@@ -182,7 +182,7 @@ class LLMSupportAgent(LLMBaseAgent):
         
         # Verifica se precisa escalonar
         if priority == "critical" or any(word in user_input for word in ["especialista", "escalonar"]):
-            escalation = escalate_to_specialist(issue_type, priority)
+            escalation = escalate_to_specialist.invoke({"issue_type": issue_type, "urgency": priority})
             response.metadata["escalation"] = escalation
         
         # Controla fluxo de saída
@@ -195,7 +195,7 @@ class LLMSupportAgent(LLMBaseAgent):
         response.metadata.update({
             "issue_type": issue_type,
             "priority": priority,
-            "tools_used": [tool.__name__ for tool in self._get_tools()],
+            "tools_used": [type(tool).__name__ for tool in self._get_tools()],
             "timestamp": datetime.now().isoformat()
         })
         

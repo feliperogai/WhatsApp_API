@@ -132,25 +132,25 @@ class LLMDataAgent(LLMBaseAgent):
             "query_type": query_type,
             "user_message": message.body,
             "available_data_sources": ["sales", "dashboard", "customers", "performance"],
-            "tools_available": [tool.__name__ for tool in self._get_tools()]
+            "tools_available": [type(tool).__name__ for tool in self._get_tools()]
         }
         
         # Adiciona dados relevantes baseado no tipo de consulta
         if query_type == "sales":
-            additional_context["sales_data"] = get_sales_data()
+            additional_context["sales_data"] = get_sales_data.invoke({})
         elif query_type == "dashboard":
-            additional_context["dashboard_data"] = get_dashboard_metrics()
+            additional_context["dashboard_data"] = get_dashboard_metrics.invoke({})
         elif query_type == "customers":
-            additional_context["customer_data"] = get_customer_analytics()
+            additional_context["customer_data"] = get_customer_analytics.invoke({})
         elif query_type == "performance":
-            additional_context["performance_data"] = get_performance_metrics()
+            additional_context["performance_data"] = get_performance_metrics.invoke({})
         else:
             # Para consultas gerais, inclui resumo de tudo
             additional_context["summary_data"] = {
-                "sales": get_sales_data(),
-                "dashboard": get_dashboard_metrics(),
-                "customers": get_customer_analytics(),
-                "performance": get_performance_metrics()
+                "sales": get_sales_data.invoke({}),
+                "dashboard": get_dashboard_metrics.invoke({}),
+                "customers": get_customer_analytics.invoke({}),
+                "performance": get_performance_metrics.invoke({})
             }
         
         # Atualiza contexto da sessão

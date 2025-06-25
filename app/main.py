@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 import logging
 import redis.asyncio as redis
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import os
 from dotenv import load_dotenv
 from datetime import datetime
@@ -20,6 +20,9 @@ from app.core.langgraph_orchestrator import LangGraphOrchestrator
 from app.models.message import WhatsAppMessage
 
 load_dotenv()
+
+# Garante que o diretório de logs existe
+os.makedirs('logs', exist_ok=True)
 
 # Configuração de logging mais detalhada
 logging.basicConfig(
