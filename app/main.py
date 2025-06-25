@@ -7,10 +7,12 @@ from typing import Dict, Any, Optional
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+import traceback
+import json
 
 from app.core.queue_manager import QueueManager, Priority
 from app.core.rate_limiter import AdaptiveRateLimiter
-from app.services.llm_service import LLMService  # CORREÇÃO: Import correto
+from app.services.llm_service import LLMService
 from app.services.message_processor import MessageProcessor
 from app.services.twilio_service import TwilioService
 from app.core.session_manager import SessionManager
@@ -19,9 +21,14 @@ from app.models.message import WhatsAppMessage
 
 load_dotenv()
 
+# Configuração de logging mais detalhada
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG if os.getenv("DEBUG", "False").lower() == "true" else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('logs/jarvis.log', mode='a')
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -39,16 +46,16 @@ app_instances = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Jarvis WhatsApp Service...")
+    logger.info("🚀 Starting Jarvis WhatsApp Service...")
     
     try:
         # Redis connection
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        logger.info(f"Connecting to Redis at: {redis_url}")
+        logger.info(f"📡 Connecting to Redis at: {redis_url}")
         
         app_instances["redis"] = redis.from_url(redis_url, decode_responses=False)
         await app_instances["redis"].ping()
-        logger.info("✅ Redis connected")
+        logger.info("✅ Redis connected successfully")
         
         # Session Manager
         app_instances["session_manager"] = SessionManager()
@@ -72,49 +79,70 @@ async def lifespan(app: FastAPI):
             user_burst=int(os.getenv("USER_BURST", "2"))
         )
         
-        # LLM Service - com tratamento de erro melhorado
+        # LLM Service - com melhor tratamento de erro
+        llm_initialized = False
         try:
             app_instances["llm_service"] = LLMService()
             await app_instances["llm_service"].initialize()
-            logger.info("✅ LLM Service initialized")
+            llm_initialized = app_instances["llm_service"].is_initialized
+            
+            if llm_initialized:
+                logger.info("✅ LLM Service initialized successfully")
+                # Testa LLM imediatamente
+                test_response = await app_instances["llm_service"].generate_response(
+                    "teste", "Responda apenas: OK"
+                )
+                logger.info(f"🧪 LLM test response: {test_response}")
+            else:
+                logger.warning("⚠️ LLM Service initialized but not connected to Ollama")
         except Exception as e:
-            logger.error(f"⚠️ LLM Service initialization failed: {e}")
-            logger.warning("Continuing with fallback responses...")
+            logger.error(f"❌ LLM Service initialization failed: {e}")
+            logger.warning("⚠️ Continuing with fallback responses only...")
         
         # Twilio Service
-        app_instances["twilio_service"] = TwilioService()
-        logger.info("✅ Twilio Service initialized")
+        try:
+            app_instances["twilio_service"] = TwilioService()
+            logger.info("✅ Twilio Service initialized")
+        except Exception as e:
+            logger.error(f"❌ Twilio Service initialization failed: {e}")
+            raise
         
-        # LangGraph Orchestrator
-        app_instances["orchestrator"] = LangGraphOrchestrator(
-            app_instances["session_manager"],
-            app_instances["llm_service"]
-        )
-        logger.info("✅ LangGraph Orchestrator initialized")
+        # LangGraph Orchestrator - só inicializa se LLM estiver OK
+        if app_instances["llm_service"]:
+            try:
+                app_instances["orchestrator"] = LangGraphOrchestrator(
+                    app_instances["session_manager"],
+                    app_instances["llm_service"]
+                )
+                logger.info("✅ LangGraph Orchestrator initialized")
+            except Exception as e:
+                logger.error(f"❌ Orchestrator initialization failed: {e}")
         
         # Message Processor
-        app_instances["message_processor"] = MessageProcessor(
-            orchestrator=app_instances["orchestrator"],
-            twilio_service=app_instances["twilio_service"],
-            rate_limiter=app_instances["rate_limiter"]
-        )
-        
-        # Start queue workers
-        await app_instances["queue_manager"].start_workers(
-            app_instances["message_processor"].process_queued_message
-        )
-        logger.info("✅ Queue workers started")
+        if app_instances["orchestrator"]:
+            app_instances["message_processor"] = MessageProcessor(
+                orchestrator=app_instances["orchestrator"],
+                twilio_service=app_instances["twilio_service"],
+                rate_limiter=app_instances["rate_limiter"]
+            )
+            
+            # Start queue workers
+            await app_instances["queue_manager"].start_workers(
+                app_instances["message_processor"].process_queued_message
+            )
+            logger.info("✅ Queue workers started")
         
         logger.info("✅ Jarvis WhatsApp Service started successfully")
+        logger.info(f"📊 LLM Status: {'Connected' if llm_initialized else 'Fallback Mode'}")
         
     except Exception as e:
-        logger.error(f"Failed to start service: {e}", exc_info=True)
-        # Não levanta exceção para permitir que o serviço inicie com funcionalidade limitada
+        logger.error(f"❌ Critical error during startup: {e}", exc_info=True)
+        # Permite que o serviço inicie mesmo com erros parciais
     
     yield
     
     # Shutdown
-    logger.info("Shutting down Jarvis WhatsApp Service...")
+    logger.info("🛑 Shutting down Jarvis WhatsApp Service...")
     
     try:
         if app_instances["queue_manager"]:
@@ -128,7 +156,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
     
-    logger.info("Jarvis WhatsApp Service stopped")
+    logger.info("✅ Jarvis WhatsApp Service stopped")
 
 app = FastAPI(
     title="Jarvis WhatsApp Service",
@@ -140,10 +168,35 @@ app = FastAPI(
 @app.get("/", response_class=HTMLResponse)
 async def root():
     try:
-        # Verifica status dos componentes
+        # Status detalhado dos componentes
         redis_status = "🟢 Online" if app_instances.get("redis") else "🔴 Offline"
-        llm_status = "🟢 Online" if app_instances.get("llm_service") and app_instances["llm_service"].is_initialized else "🟡 Fallback Mode"
+        
+        llm_status = "🔴 Offline"
+        llm_details = ""
+        if app_instances.get("llm_service"):
+            if app_instances["llm_service"].is_initialized:
+                llm_status = "🟢 Online"
+                status = await app_instances["llm_service"].get_service_status()
+                llm_details = f"""
+                <div class="metric">
+                    <div>Ollama URL</div>
+                    <div class="value" style="font-size: 1em;">{status.get('ollama_url', 'N/A')}</div>
+                </div>
+                <div class="metric">
+                    <div>Model</div>
+                    <div class="value" style="font-size: 1em;">{status.get('model', 'N/A')}</div>
+                </div>
+                """
+            else:
+                llm_status = "🟡 Fallback Mode"
+        
         orchestrator_status = "🟢 Online" if app_instances.get("orchestrator") else "🔴 Offline"
+        twilio_status = "🟢 Online" if app_instances.get("twilio_service") else "🔴 Offline"
+        
+        # Estatísticas
+        active_sessions = 0
+        if app_instances.get("session_manager"):
+            active_sessions = await app_instances["session_manager"].get_active_sessions_count()
         
         return HTMLResponse(f"""
         <html>
@@ -152,7 +205,7 @@ async def root():
             <style>
                 body {{ 
                     font-family: Arial, sans-serif; 
-                    max-width: 800px; 
+                    max-width: 1200px; 
                     margin: 0 auto; 
                     padding: 20px;
                     background: #1a1a1a;
@@ -167,6 +220,9 @@ async def root():
                 .metric {{
                     display: inline-block;
                     margin: 10px 20px 10px 0;
+                    padding: 15px;
+                    background: #333;
+                    border-radius: 8px;
                 }}
                 .metric .value {{
                     font-size: 2em;
@@ -183,6 +239,21 @@ async def root():
                 h1, h2 {{ color: #4CAF50; }}
                 a {{ color: #4CAF50; text-decoration: none; }}
                 a:hover {{ text-decoration: underline; }}
+                .warning {{
+                    background: #ff9800;
+                    color: #000;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 10px 0;
+                }}
+                .debug-info {{
+                    background: #444;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin: 20px 0;
+                    font-family: monospace;
+                    font-size: 0.9em;
+                }}
             </style>
         </head>
         <body>
@@ -203,18 +274,40 @@ async def root():
                     <div>Orchestrator</div>
                     <div class="value">{orchestrator_status}</div>
                 </div>
+                <div class="metric">
+                    <div>Twilio</div>
+                    <div class="value">{twilio_status}</div>
+                </div>
+                <div class="metric">
+                    <div>Active Sessions</div>
+                    <div class="value">{active_sessions}</div>
+                </div>
+                {llm_details}
             </div>
             
             <h2>API Endpoints</h2>
             <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook</div>
             <div class="endpoint">GET /health - Health check</div>
-            <div class="endpoint">GET /metrics - System metrics</div>
-            <div class="endpoint">GET /llm/status - LLM status</div>
+            <div class="endpoint">GET /status - Detailed system status</div>
+            <div class="endpoint">GET /llm/status - LLM service status</div>
+            <div class="endpoint">POST /llm/test - Test LLM directly</div>
+            <div class="endpoint">GET /debug/test-webhook - Test webhook response</div>
             
-            <p style="margin-top: 30px;">
-                <a href="/docs">📚 API Documentation</a> | 
-                <a href="/health">🏥 Health Check</a>
+            <h2>Quick Tests</h2>
+            <p>
+                <a href="/health">🏥 Health Check</a> | 
+                <a href="/status">📊 Full Status</a> |
+                <a href="/llm/status">🧠 LLM Status</a> |
+                <a href="/debug/test-webhook">🧪 Test Webhook</a> |
+                <a href="/docs">📚 API Docs</a>
             </p>
+            
+            <div class="debug-info">
+                <h3>Debug Information</h3>
+                <p>Timestamp: {datetime.now().isoformat()}</p>
+                <p>Environment: {os.getenv('ENVIRONMENT', 'development')}</p>
+                <p>Log Level: {os.getenv('LOG_LEVEL', 'INFO')}</p>
+            </div>
         </body>
         </html>
         """)
@@ -223,40 +316,52 @@ async def root():
         return HTMLResponse("<h1>Error loading page</h1>")
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook_sync(
+async def whatsapp_webhook(
     From: str = Form(...),
     Body: str = Form(...),
     MessageSid: str = Form(...)
 ):
     """
-    Webhook para processar mensagens do WhatsApp
+    Webhook principal para processar mensagens do WhatsApp
     """
     try:
-        logger.info(f"📱 Webhook received from {From}: {Body[:50]}...")
+        # Log detalhado da requisição
+        logger.info("="*60)
+        logger.info(f"📱 WEBHOOK RECEIVED")
+        logger.info(f"From: {From}")
+        logger.info(f"Body: {Body}")
+        logger.info(f"MessageSid: {MessageSid}")
+        logger.info("="*60)
         
-        # Verifica se o orchestrator está disponível
+        # Verifica componentes essenciais
         if not app_instances.get("orchestrator"):
-            logger.error("Orchestrator not available")
+            logger.error("❌ Orchestrator not available")
             return Response(
                 content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>🤖 Sistema iniciando. Tente novamente em 10 segundos.</Message>
+    <Message>🤖 Sistema em manutenção. Por favor, tente novamente em alguns minutos.</Message>
 </Response>''',
                 media_type="application/xml"
             )
         
-        # Verifica se LLM está inicializado
         if not app_instances.get("llm_service") or not app_instances["llm_service"].is_initialized:
-            logger.error("LLM Service not initialized")
+            logger.warning("⚠️ LLM not initialized, using fallback")
+            # Usa resposta fallback
+            from app.services.llm_service import LLMService
+            fallback_service = LLMService()
+            response_text = fallback_service._get_fallback_response(Body)
+            
             return Response(
-                content='''<?xml version="1.0" encoding="UTF-8"?>
+                content=f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>🤖 Sistema de IA em manutenção. Tente novamente em breve.</Message>
+    <Message>{response_text}</Message>
 </Response>''',
                 media_type="application/xml"
             )
         
+        # Extrai número de telefone
         phone_number = app_instances["twilio_service"].extract_phone_number(From)
+        logger.info(f"📞 Extracted phone: {phone_number}")
         
         # Cria mensagem WhatsApp
         message = WhatsAppMessage(
@@ -266,63 +371,64 @@ async def whatsapp_webhook_sync(
             body=Body
         )
         
-        # Processa através do orchestrator com timeout MENOR
+        # Processa através do orchestrator com timeout maior
         try:
             import asyncio
+            logger.info("🔄 Processing message through orchestrator...")
+            
             response = await asyncio.wait_for(
                 app_instances["orchestrator"].process_message(message),
-                timeout=20.0  # Reduzido de 25 para 20 segundos
+                timeout=25.0  # Aumentado para 25 segundos
             )
             
             response_text = response.response_text
-            logger.info(f"✅ Response generated: {response_text[:100]}...")
+            logger.info(f"✅ Response generated by {response.agent_id}")
+            logger.info(f"📝 Response preview: {response_text[:100]}...")
             
         except asyncio.TimeoutError:
-            logger.error("Timeout processing message")
-            response_text = "⏱️ Desculpe, estou processando muitas mensagens. Tente novamente!"
+            logger.error("⏱️ Timeout processing message")
+            response_text = "⏱️ Desculpe, estou demorando para processar. Por favor, tente novamente!"
+            
         except Exception as e:
-            logger.error(f"Error processing message: {e}", exc_info=True)
+            logger.error(f"❌ Error processing message: {type(e).__name__}: {str(e)}")
+            logger.error(traceback.format_exc())
             
-            # Log mais detalhado do erro
-            error_details = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "phone": phone_number,
-                "message": Body[:100]
-            }
-            logger.error(f"Error details: {json.dumps(error_details)}")
-            
-            # Mensagem de erro mais específica
-            if "connection" in str(e).lower() or "ollama" in str(e).lower():
-                response_text = "🤖 Estou com problemas para conectar ao meu cérebro. Nosso time foi notificado!"
+            # Resposta de erro mais específica
+            if "connection" in str(e).lower():
+                response_text = "🔌 Estou com problemas de conexão. Nossa equipe foi notificada!"
+            elif "ollama" in str(e).lower():
+                response_text = "🧠 Meu sistema de IA está em manutenção. Tente novamente em breve!"
             else:
-                response_text = "😅 Ops! Algo deu errado. Pode tentar de novo?"
+                response_text = "😅 Ops! Algo não saiu como esperado. Pode tentar de novo?"
         
         # Retorna resposta TwiML
-        return Response(
-            content=f'''<?xml version="1.0" encoding="UTF-8"?>
+        twiml_response = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Message>{response_text}</Message>
-</Response>''',
+</Response>'''
+        
+        logger.info(f"📤 Sending TwiML response (length: {len(twiml_response)})")
+        
+        return Response(
+            content=twiml_response,
             media_type="application/xml"
         )
         
     except Exception as e:
-        logger.error(f"Critical webhook error: {e}", exc_info=True)
-        
-        # Log crítico
-        logger.critical(f"WEBHOOK FAILED COMPLETELY: {type(e).__name__} - {str(e)}")
+        logger.critical(f"💥 CRITICAL WEBHOOK ERROR: {type(e).__name__} - {str(e)}")
+        logger.critical(traceback.format_exc())
         
         return Response(
             content='''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>🤖 Desculpe, ocorreu um erro crítico. Por favor, tente novamente em alguns minutos.</Message>
+    <Message>🆘 Erro crítico no sistema. Por favor, tente novamente mais tarde.</Message>
 </Response>''',
             media_type="application/xml"
         )
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint com informações detalhadas"""
     try:
         health_data = {
             "status": "healthy",
@@ -334,22 +440,50 @@ async def health_check():
         try:
             if app_instances.get("redis"):
                 await app_instances["redis"].ping()
-                health_data["components"]["redis"] = "connected"
-        except:
-            health_data["components"]["redis"] = "disconnected"
+                health_data["components"]["redis"] = {
+                    "status": "connected",
+                    "healthy": True
+                }
+        except Exception as e:
+            health_data["components"]["redis"] = {
+                "status": "disconnected",
+                "healthy": False,
+                "error": str(e)
+            }
             health_data["status"] = "degraded"
         
         # Check LLM
         if app_instances.get("llm_service"):
             llm_status = await app_instances["llm_service"].get_service_status()
-            health_data["components"]["llm"] = llm_status.get("status", "unknown")
+            health_data["components"]["llm"] = llm_status
+            if llm_status.get("status") != "online":
+                health_data["status"] = "degraded"
         else:
-            health_data["components"]["llm"] = "not_initialized"
+            health_data["components"]["llm"] = {
+                "status": "not_initialized",
+                "healthy": False
+            }
         
-        # Check sessions
+        # Check Sessions
         if app_instances.get("session_manager"):
             active_sessions = await app_instances["session_manager"].get_active_sessions_count()
-            health_data["components"]["sessions"] = active_sessions
+            health_data["components"]["sessions"] = {
+                "active": active_sessions,
+                "healthy": True
+            }
+        
+        # Check Orchestrator
+        if app_instances.get("orchestrator"):
+            health_data["components"]["orchestrator"] = {
+                "status": "online",
+                "healthy": True
+            }
+        else:
+            health_data["components"]["orchestrator"] = {
+                "status": "offline",
+                "healthy": False
+            }
+            health_data["status"] = "degraded"
         
         return health_data
         
@@ -357,43 +491,221 @@ async def health_check():
         logger.error(f"Health check error: {e}")
         return JSONResponse(
             status_code=503,
-            content={"status": "unhealthy", "error": str(e)}
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
         )
+
+@app.get("/status")
+async def get_detailed_status():
+    """Status detalhado do sistema"""
+    try:
+        status = {
+            "timestamp": datetime.now().isoformat(),
+            "environment": os.getenv("ENVIRONMENT", "development"),
+            "version": "3.0",
+            "components": {}
+        }
+        
+        # Redis status
+        if app_instances.get("redis"):
+            try:
+                await app_instances["redis"].ping()
+                info = await app_instances["redis"].info()
+                status["components"]["redis"] = {
+                    "status": "connected",
+                    "version": info.get("redis_version", "unknown"),
+                    "memory_used": info.get("used_memory_human", "unknown")
+                }
+            except Exception as e:
+                status["components"]["redis"] = {
+                    "status": "error",
+                    "error": str(e)
+                }
+        
+        # LLM status detalhado
+        if app_instances.get("llm_service"):
+            status["components"]["llm"] = await app_instances["llm_service"].get_service_status()
+        
+        # Session manager status
+        if app_instances.get("session_manager"):
+            active = await app_instances["session_manager"].get_active_sessions_count()
+            status["components"]["sessions"] = {
+                "active_sessions": active,
+                "status": "online"
+            }
+        
+        # Queue status
+        if app_instances.get("queue_manager"):
+            queue_status = await app_instances["queue_manager"].get_status()
+            status["components"]["queue"] = queue_status
+        
+        # Orchestrator status
+        if app_instances.get("orchestrator"):
+            orch_status = await app_instances["orchestrator"].get_workflow_status()
+            status["components"]["orchestrator"] = orch_status
+        
+        return status
+        
+    except Exception as e:
+        logger.error(f"Status error: {e}")
+        return {"status": "error", "error": str(e)}
 
 @app.get("/llm/status")
 async def get_llm_status():
-    """Endpoint específico para status do LLM"""
+    """Status específico do LLM com teste de conectividade"""
     try:
         if not app_instances.get("llm_service"):
-            return {"status": "not_initialized", "error": "LLM service not available"}
-            
-        return await app_instances["llm_service"].get_service_status()
+            return {
+                "status": "not_initialized",
+                "error": "LLM service not available",
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        # Status básico
+        status = await app_instances["llm_service"].get_service_status()
+        
+        # Testa conectividade
+        try:
+            test_response = await app_instances["llm_service"].generate_response(
+                "ping", "Responda apenas: pong"
+            )
+            status["connectivity_test"] = {
+                "success": True,
+                "response": test_response,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            status["connectivity_test"] = {
+                "success": False,
+                "error": str(e)
+            }
+        
+        return status
+        
     except Exception as e:
         logger.error(f"LLM status error: {e}")
         return {"status": "error", "error": str(e)}
 
 @app.post("/llm/test")
 async def test_llm(data: Dict[str, Any]):
-    """Testa LLM diretamente"""
+    """Testa LLM diretamente com resposta detalhada"""
     try:
         if not app_instances.get("llm_service"):
-            return {"error": "LLM service not available"}
-            
+            return {
+                "error": "LLM service not available",
+                "fallback_active": True
+            }
+        
         prompt = data.get("prompt", "Olá")
+        system_message = data.get("system_message", "Você é um assistente de teste. Responda brevemente.")
         
-        response = await app_instances["llm_service"].generate_response(
-            prompt=prompt,
-            system_message="Você é um assistente de teste. Responda brevemente."
-        )
+        start_time = datetime.now()
         
-        return {
-            "prompt": prompt,
-            "response": response,
-            "timestamp": datetime.now().isoformat()
-        }
+        try:
+            response = await app_instances["llm_service"].generate_response(
+                prompt=prompt,
+                system_message=system_message
+            )
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            
+            return {
+                "prompt": prompt,
+                "response": response,
+                "elapsed_seconds": elapsed,
+                "timestamp": datetime.now().isoformat(),
+                "llm_status": "online",
+                "model": app_instances["llm_service"].model
+            }
+            
+        except Exception as e:
+            # Usa fallback
+            fallback_response = app_instances["llm_service"]._get_fallback_response(prompt)
+            
+            return {
+                "prompt": prompt,
+                "response": fallback_response,
+                "error": str(e),
+                "fallback_used": True,
+                "timestamp": datetime.now().isoformat()
+            }
+            
     except Exception as e:
         logger.error(f"LLM test error: {e}")
         return {"error": str(e)}
+
+@app.get("/debug/test-webhook")
+async def test_webhook_debug():
+    """Endpoint de debug para testar o webhook"""
+    try:
+        # Simula uma mensagem de teste
+        test_message = WhatsAppMessage(
+            message_id="DEBUG_TEST_" + str(datetime.now().timestamp()),
+            from_number="+5511999999999",
+            to_number="+14155238886",
+            body="Teste de debug"
+        )
+        
+        if not app_instances.get("orchestrator"):
+            return {
+                "error": "Orchestrator not available",
+                "components": {
+                    "llm_service": app_instances.get("llm_service") is not None,
+                    "session_manager": app_instances.get("session_manager") is not None
+                }
+            }
+        
+        # Tenta processar
+        try:
+            response = await app_instances["orchestrator"].process_message(test_message)
+            
+            return {
+                "success": True,
+                "response": {
+                    "agent_id": response.agent_id,
+                    "text": response.response_text,
+                    "confidence": response.confidence,
+                    "metadata": response.metadata
+                },
+                "session_id": response.metadata.get("session_id"),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": traceback.format_exc()
+            }
+            
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+@app.post("/debug/test-session")
+async def test_session_creation():
+    """Testa criação de sessão"""
+    try:
+        if not app_instances.get("session_manager"):
+            return {"error": "Session manager not available"}
+        
+        phone = "+5511999999999"
+        session = await app_instances["session_manager"].get_or_create_session(phone)
+        
+        return {
+            "session_id": session.session_id,
+            "phone_number": session.phone_number,
+            "current_agent": session.current_agent,
+            "message_count": len(session.message_history),
+            "created_at": session.created_at.isoformat(),
+            "expires_at": session.expires_at.isoformat()
+        }
+        
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 if __name__ == "__main__":
     import uvicorn
@@ -401,5 +713,5 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8000")),
-        log_level="info"
+        log_level="debug" if os.getenv("DEBUG", "False").lower() == "true" else "info"
     )
