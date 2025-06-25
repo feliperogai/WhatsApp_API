@@ -1,38 +1,41 @@
 services:
-  # Aplicação principal Jarvis LLM
-  jarvis-whatsapp-llm:
-    build: 
+  redis:
+    image: redis:7-alpine
+    container_name: jarvis-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jarvis-network
+
+  jarvis-whatsapp:
+    build:
       context: .
       dockerfile: Dockerfile
+    container_name: jarvis-whatsapp-llm
     ports:
       - "8000:8000"
     environment:
-      # Sistema
-      - ENVIRONMENT=development
-      - DEBUG=True
       - REDIS_URL=redis://redis:6379/0
-      
-      # Twilio
-      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
-      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
-      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
-      - WEBHOOK_BASE_URL=${WEBHOOK_BASE_URL}
-      
-      # LLM Configuration - IMPORTANTE: Seu Ollama externo
-      - OLLAMA_BASE_URL=http://192.168.15.31:11435
-      - OLLAMA_MODEL=llama3.1:8b
-      - LLM_TEMPERATURE=0.7
-      - LLM_MAX_TOKENS=500
-      - LLM_TIMEOUT=30
-      - AGENT_MEMORY_SIZE=10
-      - CONTEXT_WINDOW=4000
-      
-      # OpenAI (opcional - fallback)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      
-    volumes:
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
+      - PYTHONUNBUFFERED=1
+      # Configurações LLM
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://192.168.15.31:11435}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:latest}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-500}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
+      # Logs detalhados
+      - LOG_LEVEL=DEBUG
+    env_file:
+      - .env
     depends_on:
       redis:
         condition: service_healthy
@@ -42,64 +45,32 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
-    networks:
-      - jarvis-network
-    # Importante: permite acesso ao Ollama externo
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # Recursos recomendados
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 512M
-
-  # Redis para sessões
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      - ./logs:/app/logs
+      - ./app:/app/app
     networks:
       - jarvis-network
 
-  # Ngrok para webhook (opcional - desenvolvimento)
-  ngrok:
-    image: ngrok/ngrok:latest
-    command: 
-      - "http"
-      - "jarvis-whatsapp-llm:8000"
-      - "--log-level=info"
-    ports:
-      - "4040:4040"
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
-    depends_on:
-      - jarvis-whatsapp-llm
-    restart: unless-stopped
-    networks:
-      - jarvis-network
-    profiles:
-      - ngrok  # Use: docker-compose --profile ngrok up
+  # Opcional: Ollama local (se quiser rodar localmente)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: jarvis-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0
+  #   restart: unless-stopped
+  #   networks:
+  #     - jarvis-network
 
 volumes:
   redis_data:
     driver: local
+  # ollama_data:
+  #   driver: local
 
 networks:
   jarvis-network:
     driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.20.0.0/16

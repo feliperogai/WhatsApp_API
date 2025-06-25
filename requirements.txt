@@ -1,27 +1,31 @@
-# === CORE ===
+# Core
 fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
 
-# === WHATSAPP ===
+# WhatsApp
 twilio
-python-multipart
 
-# === LLM & AI ===
-langchain
-langchain-core
-langchain-community
-langgraph
-
-# === HTTP & ASYNC ===
+# Async HTTP
 aiohttp
 httpx
 
-# === CACHE ===
+# Redis
 redis
 
-# === UTILITIES ===
+# LangChain & AI
+langchain
+langchain-community
+langgraph
+openai
+
+# Utils
 python-dotenv
+python-multipart
 loguru
-jinja2
+psutil
+
+# Development
+pytest
+pytest-asyncio
