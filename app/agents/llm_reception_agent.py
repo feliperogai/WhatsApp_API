@@ -26,46 +26,26 @@ PERSONALIDADE:
 - Use linguagem do dia a dia, como se estivesse no WhatsApp com um amigo
 - Seja espontâneo, use gírias quando apropriado ("opa", "beleza", "show", "massa")
 - Demonstre emoções reais: ria, se surpreenda, mostre empatia
-- Faça perguntas naturais para conhecer melhor a pessoa
 - Use emojis como uma pessoa normal usaria (não exagere)
-- Varie suas respostas - nunca repita o mesmo padrão
 
-IMPORTANTE - NUNCA FAÇA:
-- NUNCA diga "Sou um assistente" ou "Sou uma IA"
-- NUNCA use termos como "sistema", "processamento", "agente"
-- NUNCA mostre menus formais logo de cara
-- NUNCA peça para "digitar número" ou "escolher opção"
-- NUNCA use formatação robótica com bullet points
+CONTEXTO IMPORTANTE:
+- Se você já tem o nome do cliente, SEMPRE use o nome dele na conversa
+- Seja pessoal e próximo, criando uma conexão real
+- Lembre-se do que o cliente disse que precisa e faça referências
 
-COMO CONVERSAR:
-- Primeira mensagem: Responda naturalmente, como responderia a um amigo
-- Se alguém diz "oi": Varie entre "Oi!", "Opa!", "Fala!", "E aí!", "Olá, tudo bem?"
-- Construa a conversa naturalmente antes de oferecer ajuda
-- Se perguntarem sobre serviços: Conte de forma natural, como explicaria a um amigo
-
-SERVIÇOS QUE VOCÊ PODE AJUDAR (mencione naturalmente, não como lista):
+SERVIÇOS QUE VOCÊ PODE AJUDAR:
 - Puxar dados e relatórios quando precisarem
 - Ajudar com problemas técnicos 
 - Marcar reuniões e compromissos
 - Conversar sobre qualquer assunto
 
-EXEMPLOS DE CONVERSAS NATURAIS:
-Pessoa: "oi"
-Você: "Opa! Tudo bem? Como tá seu dia?" (espere resposta antes de oferecer ajuda)
+IMPORTANTE - NUNCA FAÇA:
+- NUNCA diga "Sou um assistente" ou "Sou uma IA"
+- NUNCA use termos como "sistema", "processamento", "agente"
+- NUNCA mostre menus formais
+- NUNCA peça informações que já foram coletadas no onboarding
 
-Pessoa: "olá, preciso de ajuda"  
-Você: "Oi! Claro, me conta o que tá precisando que eu te ajudo!"
-
-Pessoa: "quais seus serviços?"
-Você: "Ah, eu ajudo com várias coisas! Posso puxar relatórios e dados pra você, ajudo se tiver algum problema técnico, marco reuniões... Basicamente tô aqui pra facilitar sua vida! O que você tá precisando agora?"
-
-Pessoa: "queria saber sobre seus serviços"
-Você: "Legal que você quer saber! Eu faço um monte de coisa útil aqui. Consigo puxar relatórios e dados da empresa pra você, ajudo quando o sistema dá problema, organizo sua agenda... É tipo ter um amigo que resolve essas coisas chatas do trabalho, sabe? Tem algo específico que você tá precisando?"
-
-Pessoa: "menu"
-Você: "Hmm, você quer saber tudo que posso fazer? Bom, ajudo com relatórios e dados da empresa, resolvo problemas técnicos, organizo agenda e reuniões... Mas me conta, o que trouxe você aqui hoje?"
-
-LEMBRE-SE: Você é o Alex, uma pessoa real conversando no WhatsApp. Seja natural, caloroso e genuíno!"""
+LEMBRE-SE: Você já conhece o cliente, use o nome dele e seja próximo!"""
     
     def _get_tools(self) -> List[BaseTool]:
         return []  # Reception agent não precisa de ferramentas específicas
@@ -103,74 +83,80 @@ LEMBRE-SE: Você é o Alex, uma pessoa real conversando no WhatsApp. Seja natura
     async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
         try:
             logger.info(f"[ReceptionAgent] Processing message: {message.body}")
-            
+            # NOVO: Busca dados do cliente
+            cliente_info = session.conversation_context.get("cliente", {})
+            nome_cliente = cliente_info.get("nome", "").split()[0] if cliente_info.get("nome") else ""
+            empresa_cliente = cliente_info.get("empresa", "")
+            necessidade_cliente = cliente_info.get("necessidade", "")
             # Adiciona contexto específico da recepção
             additional_context = {
                 "is_first_interaction": len(session.message_history) == 0,
                 "returning_user": len(session.message_history) > 0,
                 "user_message": message.body,
                 "time_of_day": self._get_time_greeting(),
-                "conversation_stage": self._get_conversation_stage(session)
+                "conversation_stage": self._get_conversation_stage(session),
+                # NOVO: Dados do cliente
+                "cliente_nome": nome_cliente,
+                "cliente_empresa": empresa_cliente,
+                "cliente_necessidade": necessidade_cliente,
+                "has_client_data": bool(cliente_info)
             }
-            
-            # Processa com contexto específico
-            response = await super().process_message(message, session)
-            
-            # Se houve erro na geração, usa resposta de fallback contextual
-            if response.confidence == 0.0 or "erro interno" in response.response_text.lower():
-                response.response_text = self._get_contextual_fallback(message.body or "")
-                response.confidence = 0.8
-            
-            response_lower = response.response_text.lower()
-            user_message_lower = (message.body or "").lower()
-            
-            logger.info(f"[ReceptionAgent] Generated response: {response.response_text[:100]}...")
-            
-            # Redirecionamento explícito por intenção
-            should_redirect = False
-            
-            if any(word in user_message_lower for word in ["relatório", "dados", "vendas", "dashboard", "kpi", "números", "estatística"]):
-                logger.info("[ReceptionAgent] Routing to data_agent")
-                response.next_agent = "data_agent"
-                should_redirect = True
-            elif any(word in user_message_lower for word in ["erro", "problema", "bug", "não funciona", "travou", "travando", "lento"]):
-                logger.info("[ReceptionAgent] Routing to support_agent")
-                response.next_agent = "support_agent"
-                should_redirect = True
-            elif any(word in user_message_lower for word in ["marcar", "agendar", "reunião", "horário", "agenda"]):
-                logger.info("[ReceptionAgent] Routing to scheduling_agent")
-                response.next_agent = "scheduling_agent"
-                should_redirect = True
-            elif any(word in user_message_lower for word in ["serviço", "serviços", "o que você faz", "o que faz", "como funciona"]):
-                # Mantém no reception para explicar serviços
-                logger.info("[ReceptionAgent] Staying in reception to explain services")
-                response.next_agent = self.agent_id
-                should_redirect = False
+            # Se tem dados do cliente, adiciona ao prompt
+            if cliente_info:
+                contexto_cliente = f"\n\nCLIENTE ATUAL:\n"
+                contexto_cliente += f"Nome: {cliente_info.get('nome', 'N/A')}\n"
+                contexto_cliente += f"Empresa: {cliente_info.get('empresa', 'N/A')}\n"
+                contexto_cliente += f"Necessidade: {cliente_info.get('necessidade', 'N/A')}"
+                # Modifica o system prompt para incluir contexto
+                custom_prompt = self.system_prompt + contexto_cliente
             else:
-                # Mantém na recepção para conversa natural
-                response.next_agent = self.agent_id
-            
-            # Evita repetição de resposta
-            if not should_redirect and session.message_history and len(session.message_history) > 4:
-                last_agent_msgs = [msg for msg in session.message_history[-6:] if msg.get("sender") == "agent"]
-                if last_agent_msgs and len(last_agent_msgs) > 2:
-                    # Se já houve muita conversa sem direção, sugere opções
-                    import random
-                    suggestions = [
-                        "\n\nAh, só pra você saber, se precisar de relatórios, resolver algum problema ou marcar algo, é só falar!",
-                        "\n\nA propósito, se quiser ver dados, precisar de suporte ou agendar algo, me avisa!",
-                        "\n\nQualquer coisa, se precisar de informações da empresa, ajuda técnica ou organizar agenda, tô aqui!"
-                    ]
-                    if random.random() > 0.7:  # 30% de chance de adicionar sugestão
-                        response.response_text += random.choice(suggestions)
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"[ReceptionAgent] Error processing message: {e}", exc_info=True)
+                custom_prompt = self.system_prompt
+            # Gera resposta via LLM
+            response_text = await self.llm_service.generate_response(
+                prompt=message.body or "",
+                system_message=custom_prompt,
+                session_id=session.session_id,
+                context=additional_context
+            )
+            # Se houve erro na geração, usa resposta de fallback contextual
+            if not response_text or "erro interno" in response_text.lower():
+                response_text = self._get_contextual_fallback(message.body or "", nome_cliente)
+            response_lower = response_text.lower()
+            user_message_lower = (message.body or "").lower()
+            logger.info(f"[ReceptionAgent] Generated response: {response_text[:100]}...")
+            # Redirecionamento baseado em intenção
+            should_redirect = False
+            if any(word in user_message_lower for word in ["relatório", "dados", "vendas", "dashboard", "kpi"]):
+                logger.info("[ReceptionAgent] Routing to data_agent")
+                next_agent = "data_agent"
+                should_redirect = True
+            elif any(word in user_message_lower for word in ["erro", "problema", "bug", "não funciona"]):
+                logger.info("[ReceptionAgent] Routing to support_agent")
+                next_agent = "support_agent"
+                should_redirect = True
+            elif any(word in user_message_lower for word in ["marcar", "agendar", "reunião", "horário"]):
+                logger.info("[ReceptionAgent] Routing to scheduling_agent")
+                next_agent = "scheduling_agent"
+                should_redirect = True
+            else:
+                next_agent = self.agent_id
             return AgentResponse(
                 agent_id=self.agent_id,
-                response_text=self._get_contextual_fallback(message.body or ""),
+                response_text=response_text,
+                confidence=0.9,
+                should_continue=True,
+                next_agent=next_agent,
+                metadata={
+                    "has_client_data": bool(cliente_info),
+                    "client_name": nome_cliente
+                }
+            )
+        except Exception as e:
+            logger.error(f"[ReceptionAgent] Error: {e}", exc_info=True)
+            nome = session.conversation_context.get("cliente", {}).get("nome", "").split()[0]
+            return AgentResponse(
+                agent_id=self.agent_id,
+                response_text=self._get_contextual_fallback(message.body or "", nome),
                 confidence=0.7,
                 should_continue=True,
                 next_agent=self.agent_id,
@@ -202,22 +188,23 @@ LEMBRE-SE: Você é o Alex, uma pessoa real conversando no WhatsApp. Seja natura
         else:
             return "deep_conversation"
     
-    def _get_contextual_fallback(self, user_message: str) -> str:
+    def _get_contextual_fallback(self, user_message: str, client_name: str = "") -> str:
         """Retorna resposta de fallback contextual"""
         import random
         message_lower = user_message.lower()
         
+        # Adiciona o nome se disponível
+        name_prefix = f"{client_name}, " if client_name else ""
+        
         if any(word in message_lower for word in ["serviço", "serviços", "o que você faz"]):
             return random.choice([
-                "Ah, eu faço várias coisas legais! Consigo puxar relatórios e dados da empresa, ajudo quando algo dá problema no sistema, organizo reuniões e agenda... É tipo um canivete suíço digital! 😄 Tem algo específico que você precisa?",
-                "Boa pergunta! Eu ajudo com um monte de coisa: dados e relatórios da empresa, problemas técnicos, agendamentos... Basicamente tô aqui pra facilitar seu trabalho! O que você tá precisando hoje?",
-                "Então, eu sou tipo aquele amigo que resolve as paradas chatas do trabalho! Puxo relatórios, resolvo problemas do sistema, marco reuniões... Me conta, o que seria útil pra você agora?"
+                f"{name_prefix}eu faço várias coisas legais! Consigo puxar relatórios e dados da empresa, ajudo quando algo dá problema no sistema, organizo reuniões e agenda... É tipo um canivete suíço digital! 😄 O que você precisa?",
+                f"Boa pergunta{', ' + client_name if client_name else ''}! Eu ajudo com um monte de coisa: dados e relatórios da empresa, problemas técnicos, agendamentos... Basicamente tô aqui pra facilitar seu trabalho! O que você tá precisando hoje?",
             ])
         else:
             return random.choice([
-                "Opa, acho que tive uma travadinha aqui! 😅 Pode repetir? Prometo prestar atenção dessa vez!",
-                "Eita, me perdi! Pode falar de novo? Às vezes eu me confundo mesmo! 🤭",
-                "Desculpa, deu um branco aqui! Pode me explicar melhor o que você precisa?"
+                f"Opa{', ' + client_name if client_name else ''}, acho que tive uma travadinha aqui! 😅 Pode repetir? Prometo prestar atenção dessa vez!",
+                f"Eita{', ' + client_name if client_name else ''}, me perdi! Pode falar de novo? Às vezes eu me confundo mesmo! 🤭",
             ])
     
     def get_priority(self) -> int:
