@@ -50,22 +50,14 @@ class LangGraphOrchestrator:
     
     def _build_workflow(self):
         """Constrói o workflow do LangGraph"""
-        
-        # Cria o grafo de estado
         workflow = StateGraph(ConversationState)
-        
-        # Adiciona nós (agentes)
         workflow.add_node("reception", self._reception_node)
         workflow.add_node("classification", self._classification_node)
         workflow.add_node("data_analysis", self._data_node)
         workflow.add_node("technical_support", self._support_node)
         workflow.add_node("intent_router", self._intent_router_node)
         workflow.add_node("response_formatter", self._response_formatter_node)
-        
-        # Define ponto de entrada
         workflow.set_entry_point("intent_router")
-        
-        # Define transições condicionais
         workflow.add_conditional_edges(
             "intent_router",
             self._route_to_agent,
@@ -77,14 +69,10 @@ class LangGraphOrchestrator:
                 "end": END
             }
         )
-        
-        # Transições de cada agente para o formatador
         workflow.add_edge("reception", "response_formatter")
         workflow.add_edge("classification", "response_formatter")
         workflow.add_edge("data_analysis", "response_formatter")
         workflow.add_edge("technical_support", "response_formatter")
-        
-        # Transições do formatador
         workflow.add_conditional_edges(
             "response_formatter",
             self._should_continue_conversation,
@@ -93,20 +81,16 @@ class LangGraphOrchestrator:
                 "end": END
             }
         )
-        
-        # Compila o workflow
         self.workflow = workflow.compile()
         logger.info("LangGraph workflow built successfully")
     
     async def process_message(self, message: WhatsAppMessage) -> AgentResponse:
-        """Processa mensagem através do LangGraph"""
+        """Processa mensagem através do LangGraph com melhor tratamento de erros"""
         try:
-            # Obtém ou cria sessão - IMPORTANTE: a sessão é criada aqui, não passada como parâmetro
             session = await self.session_manager.get_or_create_session(message.from_number)
-            
-            logger.info(f"Processing message for session: {session.session_id}")
-            
-            # Prepara estado inicial
+            logger.info(f"[Orchestrator] Processing message for session: {session.session_id}")
+            logger.info(f"[Orchestrator] Message: '{message.body}'")
+            logger.info(f"[Orchestrator] Current agent: {session.current_agent}")
             initial_state = ConversationState(
                 messages=[HumanMessage(content=message.body or "")],
                 current_agent=session.current_agent or "reception_agent",
@@ -119,59 +103,145 @@ class LangGraphOrchestrator:
                 routing_decision="",
                 conversation_complete=False
             )
-            
-            # Executa workflow
-            logger.info("Invoking LangGraph workflow...")
-            final_state = await self.workflow.ainvoke(initial_state)
-            
-            logger.info(f"Workflow completed. Agent response: {final_state.get('agent_response', {})}")
-            
-            # Constrói resposta
+            logger.info("[Orchestrator] Invoking LangGraph workflow...")
+            try:
+                import asyncio
+                final_state = await asyncio.wait_for(
+                    self.workflow.ainvoke(initial_state),
+                    timeout=25.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("[Orchestrator] Workflow timeout!")
+                return AgentResponse(
+                    agent_id="system",
+                    response_text="Opa, demorei demais processando! 😅 Pode tentar de novo? Vou ser mais rápido!",
+                    confidence=0.7,
+                    should_continue=True,
+                    next_agent="reception_agent",
+                    metadata={"error": "workflow_timeout"}
+                )
+            logger.info(f"[Orchestrator] Workflow completed successfully")
+            agent_response = final_state.get("agent_response", {})
+            if not agent_response or not agent_response.get("text"):
+                logger.error("[Orchestrator] Invalid or empty response from workflow")
+                return self._create_contextual_error_response(message.body or "")
             response = AgentResponse(
                 agent_id=final_state.get("current_agent", "system"),
-                response_text=final_state.get("agent_response", {}).get("text", "Desculpe, não consegui processar sua mensagem."),
-                confidence=final_state.get("agent_response", {}).get("confidence", 0.0),
+                response_text=agent_response.get("text", ""),
+                confidence=agent_response.get("confidence", 0.0),
                 should_continue=not final_state.get("conversation_complete", False),
-                next_agent=final_state.get("agent_response", {}).get("next_agent"),
-                metadata=final_state.get("agent_response", {}).get("metadata", {})
+                next_agent=agent_response.get("next_agent"),
+                metadata=agent_response.get("metadata", {})
             )
-            
-            # Atualiza sessão
-            session.add_message(message.body or "", "user")
-            session.add_message(response.response_text, "agent", response.agent_id)
-            session.current_agent = response.next_agent or response.agent_id
-            session.conversation_context.update(final_state.get("context", {}))
-            
-            await self.session_manager.save_session(session)
-            
-            logger.info(f"Message processed successfully by {response.agent_id}")
+            try:
+                session.add_message(message.body or "", "user")
+                session.add_message(response.response_text, "agent", response.agent_id)
+                session.current_agent = response.next_agent or response.agent_id
+                session.conversation_context.update(final_state.get("context", {}))
+                await self.session_manager.save_session(session)
+                logger.info(f"[Orchestrator] Session updated successfully")
+            except Exception as e:
+                logger.error(f"[Orchestrator] Error updating session: {e}")
+            logger.info(f"[Orchestrator] Message processed by {response.agent_id}")
+            logger.info(f"[Orchestrator] Response preview: {response.response_text[:100]}...")
             return response
-            
         except Exception as e:
-            logger.error(f"LangGraph processing error: {e}", exc_info=True)
-            return self._create_error_response(str(e))
+            logger.error(f"[Orchestrator] Critical error: {type(e).__name__}: {str(e)}", exc_info=True)
+            return self._create_contextual_error_response(message.body or "")
+    
+    def _create_contextual_error_response(self, user_input: str) -> AgentResponse:
+        """Cria resposta de erro contextual baseada na entrada do usuário"""
+        import random
+        input_lower = user_input.lower()
+        if any(word in input_lower for word in ["serviço", "serviços", "o que você faz"]):
+            error_responses = [
+                "Opa! Tive um probleminha, mas já voltei! 😅 Eu ajudo com relatórios, problemas técnicos e agendamentos. O que você precisa?",
+                "Eita, bugou aqui! Mas respondendo: faço relatórios da empresa, resolvo problemas e organizo agenda! Como posso ajudar?",
+                "Desculpa a demora! Eu trabalho com dados da empresa, suporte técnico e agendamentos. Qual desses você precisa?"
+            ]
+        elif any(word in input_lower for word in ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite"]):
+            error_responses = [
+                "Oi! Desculpa, tive uma travadinha! 😅 Mas tô aqui! Como posso ajudar?",
+                "Opa! Tudo bem? Deu uma bugadinha mas já voltei! Em que posso ajudar?",
+                "Olá! Foi mal, pequeno problema técnico! Mas tô pronto pra ajudar! O que precisa?"
+            ]
+        elif any(word in input_lower for word in ["erro", "problema", "bug", "travou"]):
+            error_responses = [
+                "Poxa, justo quando você tá com problema, eu também bugo! 😅 Mas vamos resolver! Me conta o que aconteceu?",
+                "Eita, dois problemas então! O seu e o meu bug! 😄 Mas calma, me explica o que tá pegando aí?",
+                "Que ironia, você reportando erro e eu dando erro! 🤦 Mas bora resolver! O que tá acontecendo?"
+            ]
+        else:
+            error_responses = [
+                "Ops! Tive um probleminha técnico aqui! 🔧 Pode repetir? Prometo funcionar dessa vez!",
+                "Eita, deu ruim aqui! 😅 Mas já tô de volta! O que você precisa?",
+                "Desculpa, travei por um segundo! Pode falar de novo? Agora vai!",
+                "Poxa, bugou aqui! Mas tô firme e forte! Me conta o que precisa?",
+                "Xiii, pequeno problema técnico! Mas já resolvi! Como posso ajudar?"
+            ]
+        return AgentResponse(
+            agent_id="system",
+            response_text=random.choice(error_responses),
+            confidence=0.7,
+            should_continue=True,
+            next_agent="reception_agent",
+            metadata={"error": "processing_error", "original_input": user_input}
+        )
     
     async def _reception_node(self, state: ConversationState) -> ConversationState:
-        """Nó do agente de recepção"""
+        """Nó do agente de recepção com melhor tratamento de erros"""
         import traceback
         logger.info(f"[ReceptionNode] Iniciando processamento para {state['phone_number']} | input: {state['user_input']}")
+        
         try:
+            # Recupera ou cria sessão
             session = await self.session_manager.get_session(state["phone_number"])
-            logger.info(f"[ReceptionNode] Sessão recuperada: {session}")
-            logger.info(f"[ReceptionNode] Conteúdo da sessão: {session.__dict__ if session else 'None'}")
-            logger.info(f"[ReceptionNode] Estado recebido: {state}")
+            
             if session is None:
                 logger.warning(f"[ReceptionNode] Nenhuma sessão encontrada para {state['phone_number']}. Criando nova sessão.")
                 session = await self.session_manager.get_or_create_session(state["phone_number"])
-                logger.info(f"[ReceptionNode] Nova sessão criada: {session.__dict__}")
+                logger.info(f"[ReceptionNode] Nova sessão criada: {session.session_id}")
+            
+            # Cria mensagem WhatsApp
             message = WhatsAppMessage(
                 message_id=f"msg_{datetime.now().timestamp()}",
                 from_number=state["phone_number"],
                 to_number="system",
                 body=state["user_input"]
             )
-            logger.info(f"[ReceptionNode] Mensagem criada: {message.__dict__}")
-            response = await self.agents["reception_agent"].process_message(message, session)
+            
+            logger.info(f"[ReceptionNode] Processando mensagem: '{message.body}'")
+            
+            # Processa mensagem com timeout
+            try:
+                import asyncio
+                response = await asyncio.wait_for(
+                    self.agents["reception_agent"].process_message(message, session),
+                    timeout=20.0  # 20 segundos de timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error("[ReceptionNode] Timeout ao processar mensagem")
+                response = AgentResponse(
+                    agent_id="reception_agent",
+                    response_text="Opa, demorei pra processar! 😅 Pode repetir? Vou ser mais rápido!",
+                    confidence=0.7,
+                    should_continue=True,
+                    next_agent="reception_agent",
+                    metadata={"error": "timeout"}
+                )
+            
+            # Valida resposta
+            if not response or not response.response_text:
+                logger.error("[ReceptionNode] Resposta vazia ou inválida")
+                response = AgentResponse(
+                    agent_id="reception_agent",
+                    response_text="Hmm, tive um probleminha aqui. Pode tentar de novo? 🤔",
+                    confidence=0.7,
+                    should_continue=True,
+                    next_agent="reception_agent",
+                    metadata={"error": "empty_response"}
+                )
+            
             state["agent_response"] = {
                 "text": response.response_text,
                 "confidence": response.confidence,
@@ -179,12 +249,38 @@ class LangGraphOrchestrator:
                 "metadata": response.metadata
             }
             state["current_agent"] = "reception_agent"
-            logger.info(f"[ReceptionNode] Resposta gerada: {response.response_text}")
+            
+            logger.info(f"[ReceptionNode] Resposta gerada com sucesso")
+            logger.debug(f"[ReceptionNode] Response: {response.response_text[:100]}...")
+            
         except Exception as e:
-            logger.error(f"Reception node error: {e}")
+            logger.error(f"[ReceptionNode] Erro crítico: {type(e).__name__}: {str(e)}")
             logger.error(traceback.format_exc())
-            fallback = "Oi! Tive um probleminha aqui, mas já estou pronto para te ajudar. Pode repetir sua mensagem ou digitar 'menu' para ver opções."
-            state["agent_response"] = {"text": fallback, "confidence": 0.0}
+            
+            # Resposta de fallback contextual baseada na entrada
+            user_input = state.get("user_input", "").lower()
+            
+            if any(word in user_input for word in ["serviço", "serviços", "o que você faz", "o que faz"]):
+                fallback_msg = "Opa! Eu ajudo com várias coisas: relatórios da empresa, problemas técnicos, agendamentos... O que você precisa? 😊"
+            elif any(word in user_input for word in ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite"]):
+                fallback_msg = "Oi! Tudo bem? Como posso te ajudar hoje? 😊"
+            else:
+                import random
+                fallback_options = [
+                    "Eita, tive um probleminha técnico aqui! 🔧 Mas já voltei! O que você precisa?",
+                    "Ops, me confundi! 😅 Pode repetir? Prometo prestar atenção!",
+                    "Desculpa, deu uma travadinha! Mas tô aqui! Como posso ajudar?"
+                ]
+                fallback_msg = random.choice(fallback_options)
+            
+            state["agent_response"] = {
+                "text": fallback_msg,
+                "confidence": 0.7,
+                "next_agent": "reception_agent",
+                "metadata": {"error": str(e), "error_type": type(e).__name__}
+            }
+            state["current_agent"] = "reception_agent"
+        
         return state
     
     async def _classification_node(self, state: ConversationState) -> ConversationState:
