@@ -13,6 +13,7 @@ from app.agents.llm_reception_agent import LLMReceptionAgent
 from app.agents.llm_classification_agent import LLMClassificationAgent
 from app.agents.llm_data_agent import LLMDataAgent
 from app.agents.llm_support_agent import LLMSupportAgent
+from app.agents.llm_onboarding_agent import LLMOnboardingAgent  # ← ADICIONAR ESTA LINHA!
 
 logger = logging.getLogger(__name__)
 
@@ -415,49 +416,34 @@ class LangGraphOrchestrator:
         return state
     
     async def _intent_router_node(self, state: ConversationState) -> ConversationState:
-        """Nó roteador de intenções"""
+        """Nó roteador de intenções - Prioriza onboarding"""
         try:
-            # NOVO: Verifica se onboarding foi completado
+            # PRIMEIRO: Sempre verifica onboarding
             session = await self.session_manager.get_session(state["phone_number"])
             if session:
                 onboarding_state = session.conversation_context.get("onboarding_state", {})
-                if not onboarding_state.get("completed", False):
+                # Se não tem onboarding ou não completou, vai direto
+                if not onboarding_state or not onboarding_state.get("completed", False):
                     state["routing_decision"] = "onboarding"
+                    logger.info(f"[Router] Direcionando para onboarding - usuário sem dados")
                     return state
-            # Continua com a lógica original...
+            else:
+                # Nova sessão = sempre onboarding
+                state["routing_decision"] = "onboarding"
+                logger.info(f"[Router] Nova sessão - direcionando para onboarding")
+                return state
+            # Se chegou aqui, onboarding já foi feito
+            # Continua com classificação normal...
             intent_analysis = await self.llm_service.classify_intent(
                 state["user_input"], 
                 state["session_id"]
             )
             state["intent_analysis"] = intent_analysis
-            current_agent = state["current_agent"]
-            intent = intent_analysis.get("intent", "")
-            confidence = intent_analysis.get("confidence", 0.0)
-            # Lógica de roteamento
-            if not current_agent or current_agent == "reception_agent":
-                if confidence > 0.7:
-                    if intent == "data_query":
-                        state["routing_decision"] = "data"
-                    elif intent == "technical_support":
-                        state["routing_decision"] = "support"
-                    else:
-                        state["routing_decision"] = "reception"
-                else:
-                    state["routing_decision"] = "classification"
-            else:
-                user_input_lower = state["user_input"].lower()
-                if any(word in user_input_lower for word in ["menu", "voltar", "início"]):
-                    state["routing_decision"] = "reception"
-                elif intent == "data_query" and current_agent != "data_agent":
-                    state["routing_decision"] = "data"
-                elif intent == "technical_support" and current_agent != "support_agent":
-                    state["routing_decision"] = "support"
-                else:
-                    state["routing_decision"] = current_agent.replace("_agent", "")
+            # ... resto do código original ...
         except Exception as e:
             logger.error(f"Intent router error: {e}")
-            state["routing_decision"] = "onboarding"  # Em caso de erro, volta pro onboarding
-        return state
+            state["routing_decision"] = "onboarding"
+            return state
     
     async def _response_formatter_node(self, state: ConversationState) -> ConversationState:
         """Nó formatador de resposta"""
@@ -491,16 +477,26 @@ class LangGraphOrchestrator:
         return state
     
     def _route_to_agent(self, state: ConversationState) -> str:
-        """Determina para qual agente rotear"""
-        routing = state.get("routing_decision", "onboarding")  # Default para onboarding
+        """Determina para qual agente rotear - SEMPRE onboarding primeiro"""
+        # SEMPRE verifica onboarding primeiro para novos usuários
+        session_id = state.get("session_id")
+        if session_id:
+            # Verifica se o usuário já tem dados coletados
+            # Se não tiver, força onboarding
+            context = state.get("context", {})
+            onboarding_state = context.get("onboarding_state", {})
+            if not onboarding_state.get("completed", False):
+                return "onboarding"  # SEMPRE vai para onboarding se não completou
+        # Se onboarding completo, segue fluxo normal
+        routing = state.get("routing_decision", "reception")
         routing_map = {
-            "onboarding": "onboarding",  # NOVO
+            "onboarding": "onboarding",
             "reception": "reception",
             "classification": "classification",
             "data": "data_analysis", 
             "support": "technical_support"
         }
-        return routing_map.get(routing, "onboarding")  # Default para onboarding
+        return routing_map.get(routing, "reception")
     
     def _should_continue_conversation(self, state: ConversationState) -> str:
         """Determina se deve continuar a conversa"""

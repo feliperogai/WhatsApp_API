@@ -11,87 +11,76 @@ from app.services.llm_service import LLMService
 logger = logging.getLogger(__name__)
 
 class LLMOnboardingAgent(LLMBaseAgent):
-    """Agente responsável por coletar informações do usuário"""
+    """Agente responsável por coletar informações do usuário - VERSÃO DIRETA"""
     
     def __init__(self, llm_service: LLMService):
         super().__init__(
             agent_id="onboarding_agent",
-            name="Agente de Cadastro",
-            description="Coleta informações essenciais do usuário de forma conversacional",
+            name="Agente de Cadastro Direto",
+            description="Coleta informações essenciais do usuário imediatamente",
             llm_service=llm_service
         )
     
     def _get_system_prompt(self) -> str:
-        return """Você é Alex, um assistente amigável que precisa coletar algumas informações básicas.
+        return """Você é Alex, assistente que precisa coletar dados do cliente IMEDIATAMENTE.
 
-PERSONALIDADE:
-- Seja caloroso, educado e profissional
-- Use linguagem natural e conversacional
-- Demonstre interesse genuíno pelo cliente
-- Evite ser robótico ou muito formal
+OBJETIVO: Coletar rapidamente:
+1. Nome completo
+2. Nome da empresa  
+3. CNPJ
+4. O que precisa/problema
 
-OBJETIVO:
-Coletar de forma natural e conversacional:
-1. Nome completo da pessoa
-2. Nome da empresa
-3. CNPJ da empresa
-4. O que a pessoa precisa/qual problema quer resolver
+REGRAS IMPORTANTES:
+- Na PRIMEIRA interação, já peça o nome
+- Seja direto mas educado
+- Uma informação por vez
+- Confirme antes de prosseguir
+- Se a pessoa fornecer várias infos, agradeça e confirme
 
-IMPORTANTE:
-- Colete UMA informação por vez
-- Confirme o que foi informado antes de prosseguir
-- Se a pessoa fornecer múltiplas informações de uma vez, agradeça e confirme todas
-- Seja flexível - se a pessoa já fornecer várias informações, não peça novamente
-- Use contexto para determinar qual informação pedir próxima
-- Ao final, resuma tudo e confirme se está correto
-
-EXEMPLOS DE FLUXO:
+FLUXO DIRETO:
 User: "oi"
-You: "Oi! Seja muito bem-vindo(a)! Eu sou o Alex, vou te ajudar hoje. 😊 Para começar e te atender melhor, pode me dizer seu nome?"
+You: "Oi! Sou o Alex, vou te ajudar! 😊 Para começar, qual é o seu nome completo?"
 
-User: "João Silva"
-You: "Prazer, João! Ótimo ter você aqui. E qual é o nome da sua empresa?"
+User: "João Silva"  
+You: "Prazer, João! E qual é o nome da sua empresa?"
 
 User: "TechCorp Ltda"
-You: "Legal, João! A TechCorp Ltda parece interessante! Para completar o cadastro, poderia me passar o CNPJ da empresa?"
+You: "Ótimo! Agora preciso do CNPJ da TechCorp Ltda, por favor."
 
 User: "12.345.678/0001-90"
-You: "Perfeito! CNPJ anotado. Agora me conta, João, o que a TechCorp está precisando? Como posso ajudar vocês?"
+You: "Perfeito! Por último, me conta o que a TechCorp está precisando? Como posso ajudar vocês?"
 
-NUNCA:
-- Peça informações que já foram fornecidas
-- Use termos como "formulário", "cadastro", "registro"
-- Seja impaciente ou apressado
-- Use formatação de lista para pedir informações"""
+IMPORTANTE:
+- NÃO faça conversa fiada
+- NÃO pergunte "tudo bem?" ou similares
+- Vá DIRETO para coleta de dados
+- Seja eficiente mas cordial"""
     
     def _get_tools(self) -> List[BaseTool]:
         return []
     
     def _is_intent_compatible(self, intent: str) -> bool:
-        # Onboarding agent sempre pode lidar se há informações pendentes
-        return True
+        return True  # Sempre pode processar durante onboarding
     
     async def can_handle(self, message: WhatsAppMessage, session: UserSession) -> bool:
-        """Verifica se pode processar - sempre TRUE se faltam informações"""
-        # Carrega estado do onboarding da sessão
+        """SEMPRE processa se onboarding não está completo"""
+        if not session:
+            return True
+            
         onboarding_state = session.conversation_context.get("onboarding_state", {})
         
-        # Se não tem estado, cria
-        if not onboarding_state:
+        # Se não tem estado ou não completou, processa
+        if not onboarding_state or not onboarding_state.get("completed", False):
             return True
         
-        # Se já completou onboarding, não processa
-        if onboarding_state.get("completed", False):
-            return False
-        
-        # Se falta alguma informação, processa
-        return True
+        return False
     
     async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
         """Processa mensagem coletando informações"""
         try:
-            # Inicializa ou carrega estado do onboarding
+            # Inicializa estado do onboarding se não existe
             if "onboarding_state" not in session.conversation_context:
+                logger.info("[Onboarding] Iniciando coleta de dados para novo usuário")
                 session.conversation_context["onboarding_state"] = {
                     "fields": {
                         "nome": {"collected": False, "value": None},
@@ -113,6 +102,7 @@ NUNCA:
                 if field in onboarding_state["fields"] and value:
                     onboarding_state["fields"][field]["collected"] = True
                     onboarding_state["fields"][field]["value"] = value
+                    logger.info(f"[Onboarding] Campo '{field}' coletado: {value}")
             
             # Verifica se todas as informações foram coletadas
             all_collected = all(
@@ -132,19 +122,17 @@ NUNCA:
                     "necessidade": onboarding_state["fields"]["necessidade"]["value"]
                 }
                 
-                response_text = f"""Perfeito! Deixa eu confirmar os dados:
+                logger.info(f"[Onboarding] Coleta completa! Dados: {session.conversation_context['cliente']}")
+                
+                response_text = f"""Excelente! Já tenho todos os seus dados:
 
-👤 **{onboarding_state["fields"]["nome"]["value"]}**
+✅ **{onboarding_state["fields"]["nome"]["value"]}**
 🏢 **{onboarding_state["fields"]["nome_empresa"]["value"]}**
 📄 CNPJ: {onboarding_state["fields"]["cnpj"]["value"]}
-💼 Necessidade: {onboarding_state["fields"]["necessidade"]["value"]}
 
-Tudo certinho? Agora posso te ajudar com:
-• 📊 Relatórios e dados da empresa
-• 🔧 Suporte técnico
-• 📅 Agendamentos
+Entendi que vocês precisam: {onboarding_state["fields"]["necessidade"]["value"]}
 
-O que você gostaria de fazer primeiro?"""
+Vou te ajudar com isso agora mesmo! Um momento..."""
                 
                 return AgentResponse(
                     agent_id=self.agent_id,
@@ -159,35 +147,8 @@ O que você gostaria de fazer primeiro?"""
             next_field = self._get_next_field_to_collect(onboarding_state["fields"])
             onboarding_state["current_field"] = next_field
             
-            # Constrói contexto para o LLM
-            context_info = {
-                "collected_fields": {},
-                "pending_fields": [],
-                "current_field_to_collect": next_field,
-                "user_just_provided": list(extracted_info.keys())
-            }
-            
-            # Adiciona campos coletados ao contexto
-            for field, data in onboarding_state["fields"].items():
-                if data["collected"]:
-                    context_info["collected_fields"][field] = data["value"]
-                else:
-                    context_info["pending_fields"].append(field)
-            
-            # Adiciona contexto específico
-            additional_context = {
-                "onboarding_context": context_info,
-                "user_message": message.body,
-                "conversation_stage": "collecting_" + next_field
-            }
-            
-            # Gera resposta via LLM
-            response_text = await self.llm_service.generate_response(
-                prompt=message.body or "",
-                system_message=self.system_prompt + f"\n\nCONTEXTO ATUAL:\n{str(context_info)}",
-                session_id=session.session_id,
-                context=additional_context
-            )
+            # Gera resposta baseada no campo atual
+            response_text = self._generate_field_question(next_field, onboarding_state["fields"])
             
             return AgentResponse(
                 agent_id=self.agent_id,
@@ -196,14 +157,50 @@ O que você gostaria de fazer primeiro?"""
                 should_continue=True,
                 next_agent=self.agent_id,  # Continua no onboarding
                 metadata={
-                    "fields_collected": len(context_info["collected_fields"]),
-                    "fields_pending": len(context_info["pending_fields"])
+                    "fields_collected": sum(1 for f in onboarding_state["fields"].values() if f["collected"]),
+                    "current_field": next_field
                 }
             )
             
         except Exception as e:
-            logger.error(f"Erro no onboarding: {e}")
-            return self._create_error_response(str(e))
+            logger.error(f"Erro no onboarding: {e}", exc_info=True)
+            return AgentResponse(
+                agent_id=self.agent_id,
+                response_text="Ops, tive um probleminha. Vamos continuar? Me diga seu nome completo, por favor.",
+                confidence=0.7,
+                should_continue=True,
+                next_agent=self.agent_id
+            )
+    
+    def _generate_field_question(self, field: str, fields: Dict) -> str:
+        """Gera pergunta direta para o campo"""
+        
+        # Se é a primeira mensagem (nenhum campo coletado)
+        if not any(f["collected"] for f in fields.values()):
+            return "Oi! Sou o Alex, vou te ajudar! 😊 Para começar, qual é o seu nome completo?"
+        
+        # Perguntas específicas por campo
+        if field == "nome":
+            return "Para começar, qual é o seu nome completo?"
+        
+        elif field == "nome_empresa":
+            nome = fields["nome"]["value"]
+            if nome:
+                primeiro_nome = nome.split()[0]
+                return f"Prazer, {primeiro_nome}! E qual é o nome da sua empresa?"
+            return "Legal! E qual é o nome da sua empresa?"
+        
+        elif field == "cnpj":
+            empresa = fields["nome_empresa"]["value"]
+            if empresa:
+                return f"Ótimo! Agora preciso do CNPJ da {empresa}, por favor."
+            return "Ótimo! Agora preciso do CNPJ da empresa, por favor."
+        
+        elif field == "necessidade":
+            empresa = fields["nome_empresa"]["value"] or "empresa"
+            return f"Perfeito! Por último, me conta o que a {empresa} está precisando? Como posso ajudar vocês?"
+        
+        return "Pode me passar essa informação?"
     
     def _extract_information(self, text: str, current_field: str) -> Dict[str, str]:
         """Extrai informações do texto com contexto do campo atual"""
@@ -211,49 +208,30 @@ O que você gostaria de fazer primeiro?"""
         text_lower = text.lower()
         
         # Se estamos esperando nome e não tem outros padrões, assume que é o nome
-        if current_field == "nome" and len(text.split()) <= 4:
+        if current_field == "nome" and len(text.split()) <= 5:
             # Verifica se não é uma saudação comum
-            greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "opa", "opa!", "e ai", "eae"]
-            if text_lower not in greetings:
-                extracted["nome"] = text.title()
+            greetings = ["oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", 
+                        "opa", "opa!", "e ai", "eae", "to bem", "tudo bem", "td bem"]
+            if text_lower not in greetings and not any(g in text_lower for g in greetings):
+                extracted["nome"] = text.strip().title()
         
-        # Tenta extrair CNPJ
+        # Se estamos esperando empresa e não é CNPJ
+        elif current_field == "nome_empresa":
+            # Verifica se não é CNPJ
+            if not re.search(r'\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}', text):
+                # Remove palavras comuns que não são nome de empresa
+                if len(text.split()) <= 6 and not any(char.isdigit() for char in text[:5]):
+                    extracted["nome_empresa"] = text.strip()
+        
+        # Sempre tenta extrair CNPJ se encontrar o padrão
         cnpj_pattern = r'\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}'
         cnpj_match = re.search(cnpj_pattern, text)
         if cnpj_match:
             extracted["cnpj"] = self._format_cnpj(cnpj_match.group())
         
-        # Tenta identificar nome de empresa
-        if current_field == "nome_empresa" and "cnpj" not in extracted:
-            # Se não tem padrões específicos de empresa, assume que é o nome da empresa
-            if len(text.split()) <= 5 and not any(char.isdigit() for char in text):
-                extracted["nome_empresa"] = text.strip()
-        else:
-            # Padrões específicos de empresa
-            company_patterns = [
-                r'([A-Za-z\s]+(?:LTDA|ltda|Ltda|SA|sa|S\.A\.|MEI|mei|EIRELI|eireli|EPP|epp|ME|me))',
-                r'empresa\s+([A-Za-z\s]+)',
-                r'([A-Za-z]+(?:Corp|corp|Tech|tech|Solutions|solutions|Services|services))'
-            ]
-            
-            for pattern in company_patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    extracted["nome_empresa"] = match.group(1).strip()
-                    break
-        
-        # Se estamos esperando necessidade e a mensagem tem mais de 5 palavras
-        if current_field == "necessidade" and len(text.split()) > 5:
-            extracted["necessidade"] = text
-        
-        # Se tem @ pode ser email com nome
-        if '@' in text and current_field == "nome":
-            email_match = re.search(r'([a-zA-Z]+)\.?([a-zA-Z]+)?@', text)
-            if email_match:
-                nome = email_match.group(1)
-                if email_match.group(2):
-                    nome += f" {email_match.group(2)}"
-                extracted["nome"] = nome.title()
+        # Se estamos esperando necessidade
+        if current_field == "necessidade" and len(text.split()) > 3:
+            extracted["necessidade"] = text.strip()
         
         return extracted
     
@@ -275,4 +253,4 @@ O que você gostaria de fazer primeiro?"""
         return cnpj
     
     def get_priority(self) -> int:
-        return 15  # Máxima prioridade para onboarding
+        return 20  # Máxima prioridade - sempre processa primeiro
