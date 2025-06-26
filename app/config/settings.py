@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 from typing import List, Optional
 import os
 
@@ -44,5 +44,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="allow"
     )
+
+    @field_validator('retry_delays', mode='before')
+    def parse_retry_delays(cls, v):
+        if isinstance(v, str):
+            import json
+            try:
+                return json.loads(v)
+            except Exception:
+                # fallback para split por vírgula
+                return [int(x) for x in v.split(',') if x.strip().isdigit()]
+        return v
 
 settings = Settings()

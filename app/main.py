@@ -330,109 +330,65 @@ async def root():
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
-    # Loga corpo bruto e headers
-    raw_body = await request.body()
-    logger.info("="*60)
-    logger.info(">>> RAW BODY RECEBIDO <<<")
-    logger.info(raw_body)
-    logger.info(">>> HEADERS <<<")
-    logger.info(dict(request.headers))
-    logger.info("="*60)
-    # Extrai campos do form ou do json
-    From = Body = MessageSid = None
-    data = {}
     try:
-        data = await request.form()
-        From = data.get("From")
-        Body = data.get("Body")
-        MessageSid = data.get("MessageSid")
-        logger.info(f"[Webhook] Dados recebidos (form): {dict(data)}")
-    except Exception as e:
-        logger.warning(f"[Webhook] Não foi possível ler como form: {e}")
+        # Extrai dados do webhook
+        From = Body = MessageSid = None
+        data = {}
+        
+        # Tenta ler como form data (padrão Twilio)
         try:
-            data = await request.json()
+            data = await request.form()
             From = data.get("From")
             Body = data.get("Body")
             MessageSid = data.get("MessageSid")
-            logger.info(f"[Webhook] Dados recebidos (json): {data}")
-        except Exception as e2:
-            logger.error(f"[Webhook] Não foi possível ler como json: {e2}")
-            data = {}
-    # Se algum campo obrigatório não veio, retorna erro detalhado
-    missing = []
-    for field, value in [("From", From), ("Body", Body), ("MessageSid", MessageSid)]:
-        if value is None:
-            missing.append(field)
-    if missing:
-        logger.error(f"[Webhook] Campos obrigatórios ausentes: {missing} | Corpo recebido: {dict(data)} | RAW: {raw_body}")
-        # Resposta amigável para o usuário no WhatsApp
-        fallback_text = (
-            "Oi! Tive um probleminha ao receber sua mensagem (faltou algum dado importante). "
-            "Pode tentar novamente ou digitar 'menu'? Se o problema persistir, aguarde alguns minutos."
-        )
-        xml_response = app_instances["twilio_service"].create_webhook_response(fallback_text)
-        logger.info(f"📤 MENSAGEM ENVIADA (FALTA DADO) | To: {From} | Body: {fallback_text}")
-        return Response(
-            content=xml_response,
-            media_type="application/xml"
-        )
-    
-    # Log detalhado da requisição recebida
-    logger.info(f"📥 MENSAGEM RECEBIDA | From: {From} | Body: {Body} | MessageSid: {MessageSid}")
-    
-    # Loga status do LLMService
-    llm_service = app_instances.get("llm_service")
-    if llm_service:
-        status = await llm_service.get_service_status()
-        logger.info(f"[Webhook] LLMService status: {status}")
-    else:
-        logger.warning("[Webhook] LLMService não está disponível na instância global!")
-
-    # Tenta reinicializar o LLMService se não estiver inicializado
-    if llm_service and not llm_service.is_initialized:
-        logger.warning("[Webhook] LLMService não inicializado, tentando reinicializar...")
-        try:
-            await llm_service.initialize()
-            status = await llm_service.get_service_status()
-            logger.info(f"[Webhook] LLMService status após tentativa de init: {status}")
-        except Exception as e:
-            logger.error(f"[Webhook] Falha ao reinicializar LLMService: {e}")
-
-    # Se ainda não inicializado, retorna fallback informando o motivo
-    if not llm_service or not llm_service.is_initialized:
-        logger.warning("⚠️ LLM ainda não inicializado após tentativa de recovery. Usando fallback.")
-        reason = getattr(llm_service, "connection_error", "Motivo desconhecido")
-        response_text = f"Desculpe, estou temporariamente fora do ar para respostas inteligentes. Motivo: {reason}. Tente novamente em alguns minutos ou digite 'menu'."
-        xml_response = app_instances["twilio_service"].create_webhook_response(response_text)
-        logger.info(f"📤 MENSAGEM ENVIADA (FALTA DADO) | To: {From} | Body: {fallback_text}")
-        return Response(
-            content=xml_response,
-            media_type="application/xml"
-        )
-    
-    try:
-        # Log detalhado da requisição
-        logger.info("="*60)
-        logger.info(f"📱 MENSAGEM RECEBIDA | From: {From} | Body: {Body} | MessageSid: {MessageSid}")
-        logger.info("="*60)
+            logger.info(f"[Webhook] Form data recebido: From={From}, Body={Body}, MessageSid={MessageSid}")
+        except:
+            # Tenta ler como JSON
+            try:
+                data = await request.json()
+                From = data.get("From")
+                Body = data.get("Body")
+                MessageSid = data.get("MessageSid")
+                logger.info(f"[Webhook] JSON data recebido: From={From}, Body={Body}, MessageSid={MessageSid}")
+            except:
+                logger.error("[Webhook] Falha ao parsear dados")
         
-        # Verifica componentes essenciais
+        # Valida campos obrigatórios
+        if not all([From, Body, MessageSid]):
+            logger.error(f"[Webhook] Campos faltando - From: {From}, Body: {Body}, MessageSid: {MessageSid}")
+            fallback_text = "Oi! Não consegui entender sua mensagem. Pode tentar novamente?"
+            xml_response = app_instances["twilio_service"].create_webhook_response(fallback_text)
+            return Response(content=xml_response, media_type="application/xml")
+        
+        # Log da mensagem recebida
+        logger.info(f"📥 MENSAGEM RECEBIDA | From: {From} | Body: {Body} | MessageSid: {MessageSid}")
+        
+        # Verifica se o orchestrator está disponível
         if not app_instances.get("orchestrator"):
-            logger.error("❌ Orchestrator not available")
-            xml_response = app_instances["twilio_service"].create_webhook_response(
-                "🤖 Sistema em manutenção. Por favor, tente novamente em alguns minutos."
-            )
-            return Response(
-                content=xml_response,
-                media_type="application/xml"
-            )
-        
-        # IMPORTANTE: TODAS as mensagens vão para o orchestrator/LLM
-        # Sem respostas hardcoded!
+            logger.error("❌ Orchestrator não disponível")
+            
+            # Usa respostas naturais de fallback
+            fallback_responses = {
+                "oi": "Opa! Tudo bem? Como posso te ajudar hoje? 😊",
+                "ola": "Oi! Que bom falar com você! O que você precisa?",
+                "olá": "Olá! Como você está? Em que posso ajudar?",
+                "td bem": "Tudo ótimo por aqui! E com você? Como posso te ajudar hoje?",
+                "tudo bem": "Tudo bem sim! E você, como está? Precisa de alguma coisa?",
+                "bom dia": "Bom dia! Espero que seu dia esteja sendo ótimo! Como posso ajudar?",
+                "boa tarde": "Boa tarde! Como está seu dia? Posso te ajudar com algo?",
+                "boa noite": "Boa noite! Como posso te ajudar agora?",
+            }
+            
+            body_lower = Body.lower().strip()
+            response_text = fallback_responses.get(body_lower, 
+                "Oi! Tô aqui pra te ajudar! Me conta o que você precisa - posso puxar relatórios, resolver problemas técnicos, marcar reuniões... O que seria bom pra você?")
+            
+            xml_response = app_instances["twilio_service"].create_webhook_response(response_text)
+            return Response(content=xml_response, media_type="application/xml")
         
         # Extrai número de telefone
         phone_number = app_instances["twilio_service"].extract_phone_number(From)
-        logger.info(f"📞 Extracted phone: {phone_number}")
+        logger.info(f"📞 Número extraído: {phone_number}")
         
         # Cria mensagem WhatsApp
         message = WhatsAppMessage(
@@ -442,59 +398,52 @@ async def whatsapp_webhook(request: Request):
             body=Body
         )
         
-        # Processa através do orchestrator com timeout adequado
+        # Processa através do orchestrator LLM
         try:
             import asyncio
-            logger.info("🔄 Processing message through AI orchestrator...")
+            logger.info("🤖 Processando mensagem com IA...")
             
+            # Timeout de 25 segundos para dar tempo do LLM responder
             response = await asyncio.wait_for(
                 app_instances["orchestrator"].process_message(message),
                 timeout=25.0
             )
             
             response_text = response.response_text
-            logger.info(f"✅ Response generated by {response.agent_id}")
-            logger.info(f"📝 Response preview: {response_text[:100]}...")
+            logger.info(f"✅ Resposta gerada pelo agente {response.agent_id}")
+            logger.info(f"📝 Resposta: {response_text[:100]}...")
             
         except asyncio.TimeoutError:
-            logger.error("⏱️ Timeout processing message")
+            logger.error("⏱️ Timeout ao processar mensagem")
             response_text = "Opa, demorei demais pensando aqui! 😅 Pode repetir? Prometo ser mais rápido!"
             
         except Exception as e:
-            logger.error(f"❌ Error processing message: {type(e).__name__}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"❌ Erro ao processar: {type(e).__name__}: {str(e)}")
             
-            # Respostas de erro mais naturais e variadas
+            # Respostas de erro mais naturais
+            import random
             error_responses = [
                 "Eita, bugou aqui! 🐛 Me dá um segundinho que já volto!",
                 "Ops, travei! 😵 Tenta de novo? Prometo que vou funcionar!",
                 "Xiii, deu ruim aqui! Mas calma, já tô voltando! 🔧",
                 "Poxa, tive um probleminha técnico. Pode repetir? 🙏"
             ]
-            import random
             response_text = random.choice(error_responses)
         
-        # Retorna resposta TwiML
-        twiml_response = app_instances["twilio_service"].create_webhook_response(response_text)
+        # Cria resposta TwiML
+        xml_response = app_instances["twilio_service"].create_webhook_response(response_text)
         
-        logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {response_text}")
-        return Response(
-            content=twiml_response,
-            media_type="application/xml"
-        )
+        logger.info(f"📤 RESPOSTA ENVIADA | To: {From} | Body: {response_text}")
+        return Response(content=xml_response, media_type="application/xml")
         
     except Exception as e:
-        logger.critical(f"💥 CRITICAL WEBHOOK ERROR: {type(e).__name__} - {str(e)}")
+        logger.critical(f"💥 ERRO CRÍTICO NO WEBHOOK: {type(e).__name__} - {str(e)}")
+        import traceback
         logger.critical(traceback.format_exc())
         
-        # Erro crítico mais humano
         error_text = "🆘 Erro crítico no sistema. Por favor, tente novamente mais tarde."
         xml_response = app_instances["twilio_service"].create_webhook_response(error_text)
-        logger.info(f"📤 MENSAGEM ENVIADA (ERRO CRÍTICO) | To: {From} | Body: {error_text}")
-        return Response(
-            content=xml_response,
-            media_type="application/xml"
-        )
+        return Response(content=xml_response, media_type="application/xml")
 
 @app.get("/health")
 async def health_check():

@@ -24,16 +24,14 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Redis
       - REDIS_URL=redis://redis:6379/0
+      # Python
       - PYTHONUNBUFFERED=1
-      # Configurações LLM
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://192.168.15.31:11435}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:latest}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-500}
-      - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
-      # Logs detalhados
-      - LOG_LEVEL=DEBUG
+      # App
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - DEBUG=False
     env_file:
       - .env
     depends_on:
@@ -47,29 +45,14 @@ services:
       retries: 3
     volumes:
       - ./logs:/app/logs
-      - ./app:/app/app
+      # Remova esta linha em produção (apenas para desenvolvimento)
+      # - ./app:/app/app
     networks:
       - jarvis-network
-
-  # Opcional: Ollama local (se quiser rodar localmente)
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: jarvis-ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   environment:
-  #     - OLLAMA_HOST=0.0.0.0
-  #   restart: unless-stopped
-  #   networks:
-  #     - jarvis-network
 
 volumes:
   redis_data:
     driver: local
-  # ollama_data:
-  #   driver: local
 
 networks:
   jarvis-network:
