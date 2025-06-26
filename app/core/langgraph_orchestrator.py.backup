@@ -9,11 +9,11 @@ from app.models.message import WhatsAppMessage, AgentResponse
 from app.models.session import UserSession
 from app.core.session_manager import SessionManager
 from app.services.llm_service import LLMService
-from app.agents.llm_proactive_reception_agent import LLMProactiveReceptionAgent
+from app.agents.llm_reception_agent import LLMReceptionAgent
 from app.agents.llm_classification_agent import LLMClassificationAgent
 from app.agents.llm_data_agent import LLMDataAgent
 from app.agents.llm_support_agent import LLMSupportAgent
-
+from app.agents.llm_onboarding_agent import LLMSmartReceptionAgent
 
 logger = logging.getLogger(__name__)
 
@@ -42,27 +42,36 @@ class LangGraphOrchestrator:
     def _initialize_agents(self):
         """Inicializa todos os agentes LLM"""
         self.agents = {
-            "reception_agent": LLMProactiveReceptionAgent(self.llm_service),
+            "onboarding_agent": LLMSmartReceptionAgent(self.llm_service),
+            "reception_agent": LLMReceptionAgent(self.llm_service),
             "classification_agent": LLMClassificationAgent(self.llm_service),
             "data_agent": LLMDataAgent(self.llm_service),
             "support_agent": LLMSupportAgent(self.llm_service)
         }
-        logger.info("LangGraph agents initialized")
-
+        logger.info("LangGraph agents initialized with onboarding")
+    
     def _build_workflow(self):
         """Constrói o workflow do LangGraph"""
         workflow = StateGraph(ConversationState)
+        
+        # Adiciona todos os nós
+        workflow.add_node("onboarding", self._onboarding_node)
         workflow.add_node("reception", self._reception_node)
         workflow.add_node("classification", self._classification_node)
         workflow.add_node("data_analysis", self._data_node)
         workflow.add_node("technical_support", self._support_node)
         workflow.add_node("intent_router", self._intent_router_node)
         workflow.add_node("response_formatter", self._response_formatter_node)
+        
+        # Define ponto de entrada
         workflow.set_entry_point("intent_router")
+        
+        # Adiciona rotas condicionais
         workflow.add_conditional_edges(
             "intent_router",
             self._route_to_agent,
             {
+                "onboarding": "onboarding",
                 "reception": "reception",
                 "classification": "classification", 
                 "data": "data_analysis",
@@ -70,10 +79,14 @@ class LangGraphOrchestrator:
                 "end": END
             }
         )
+        
+        # Adiciona edges
+        workflow.add_edge("onboarding", "response_formatter")
         workflow.add_edge("reception", "response_formatter")
         workflow.add_edge("classification", "response_formatter")
         workflow.add_edge("data_analysis", "response_formatter")
         workflow.add_edge("technical_support", "response_formatter")
+        
         workflow.add_conditional_edges(
             "response_formatter",
             self._should_continue_conversation,
@@ -82,9 +95,42 @@ class LangGraphOrchestrator:
                 "end": END
             }
         )
+        
         self.workflow = workflow.compile()
-        logger.info("LangGraph workflow built successfully")
+        logger.info("LangGraph workflow built successfully with onboarding")
 
+    async def _onboarding_node(self, state: ConversationState) -> ConversationState:
+        """Nó do agente de onboarding"""
+        logger.info(f"[OnboardingNode] Processing for {state['phone_number']}")
+        try:
+            session = await self.session_manager.get_session(state["phone_number"])
+            if session is None:
+                session = await self.session_manager.get_or_create_session(state["phone_number"])
+            message = WhatsAppMessage(
+                message_id=f"msg_{datetime.now().timestamp()}",
+                from_number=state["phone_number"],
+                to_number="system",
+                body=state["user_input"]
+            )
+            response = await self.agents["onboarding_agent"].process_message(message, session)
+            state["agent_response"] = {
+                "text": response.response_text,
+                "confidence": response.confidence,
+                "next_agent": response.next_agent,
+                "metadata": response.metadata
+            }
+            state["current_agent"] = "onboarding_agent"
+            if response.metadata.get("onboarding_completed"):
+                state["conversation_complete"] = False  # Continua conversa após onboarding
+        except Exception as e:
+            logger.error(f"[OnboardingNode] Error: {e}")
+            state["agent_response"] = {
+                "text": "Ops, tive um probleminha. Vamos tentar de novo? Me diga seu nome, por favor.",
+                "confidence": 0.7,
+                "next_agent": "onboarding_agent"
+            }
+        return state
+    
     async def process_message(self, message: WhatsAppMessage) -> AgentResponse:
         """Processa mensagem através do LangGraph com melhor tratamento de erros"""
         try:
@@ -370,40 +416,34 @@ class LangGraphOrchestrator:
         return state
     
     async def _intent_router_node(self, state: ConversationState) -> ConversationState:
+        """Nó roteador de intenções - Prioriza onboarding"""
         try:
-            # Lógica de roteamento baseada em intenção
+            # PRIMEIRO: Sempre verifica onboarding
+            session = await self.session_manager.get_session(state["phone_number"])
+            if session:
+                onboarding_state = session.conversation_context.get("onboarding_state", {})
+                # Se não tem onboarding ou não completou, vai direto
+                if not onboarding_state or not onboarding_state.get("completed", False):
+                    state["routing_decision"] = "onboarding"
+                    logger.info(f"[Router] Direcionando para onboarding - usuário sem dados")
+                    return state
+            else:
+                # Nova sessão = sempre onboarding
+                state["routing_decision"] = "onboarding"
+                logger.info(f"[Router] Nova sessão - direcionando para onboarding")
+                return state
+            # Se chegou aqui, onboarding já foi feito
+            # Continua com classificação normal...
             intent_analysis = await self.llm_service.classify_intent(
                 state["user_input"], 
                 state["session_id"]
             )
             state["intent_analysis"] = intent_analysis
-            current_agent = state["current_agent"]
-            intent = intent_analysis.get("intent", "")
-            confidence = intent_analysis.get("confidence", 0.0)
-            if not current_agent or current_agent == "reception_agent":
-                if confidence > 0.7:
-                    if intent == "data_query":
-                        state["routing_decision"] = "data"
-                    elif intent == "technical_support":
-                        state["routing_decision"] = "support"
-                    else:
-                        state["routing_decision"] = "reception"
-                else:
-                    state["routing_decision"] = "classification"
-            else:
-                user_input_lower = state["user_input"].lower()
-                if any(word in user_input_lower for word in ["menu", "voltar", "início"]):
-                    state["routing_decision"] = "reception"
-                elif intent == "data_query" and current_agent != "data_agent":
-                    state["routing_decision"] = "data"
-                elif intent == "technical_support" and current_agent != "support_agent":
-                    state["routing_decision"] = "support"
-                else:
-                    state["routing_decision"] = current_agent.replace("_agent", "")
+            # ... resto do código original ...
         except Exception as e:
             logger.error(f"Intent router error: {e}")
-            state["routing_decision"] = "reception"
-        return state
+            state["routing_decision"] = "onboarding"
+            return state
     
     async def _response_formatter_node(self, state: ConversationState) -> ConversationState:
         """Nó formatador de resposta"""
@@ -437,8 +477,20 @@ class LangGraphOrchestrator:
         return state
     
     def _route_to_agent(self, state: ConversationState) -> str:
+        """Determina para qual agente rotear - SEMPRE onboarding primeiro"""
+        # SEMPRE verifica onboarding primeiro para novos usuários
+        session_id = state.get("session_id")
+        if session_id:
+            # Verifica se o usuário já tem dados coletados
+            # Se não tiver, força onboarding
+            context = state.get("context", {})
+            onboarding_state = context.get("onboarding_state", {})
+            if not onboarding_state.get("completed", False):
+                return "onboarding"  # SEMPRE vai para onboarding se não completou
+        # Se onboarding completo, segue fluxo normal
         routing = state.get("routing_decision", "reception")
         routing_map = {
+            "onboarding": "onboarding",
             "reception": "reception",
             "classification": "classification",
             "data": "data_analysis", 
