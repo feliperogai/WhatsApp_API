@@ -13,7 +13,7 @@ from app.agents.llm_reception_agent import LLMReceptionAgent
 from app.agents.llm_classification_agent import LLMClassificationAgent
 from app.agents.llm_data_agent import LLMDataAgent
 from app.agents.llm_support_agent import LLMSupportAgent
-from app.agents.llm_onboarding_agent import LLMOnboardingAgent  # ← ADICIONAR ESTA LINHA!
+from app.agents.llm_onboarding_agent import LLMSmartReceptionAgent
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class LangGraphOrchestrator:
     def _initialize_agents(self):
         """Inicializa todos os agentes LLM"""
         self.agents = {
-            "onboarding_agent": LLMOnboardingAgent(self.llm_service),  # NOVO
+            "onboarding_agent": LLMSmartReceptionAgent(self.llm_service),
             "reception_agent": LLMReceptionAgent(self.llm_service),
             "classification_agent": LLMClassificationAgent(self.llm_service),
             "data_agent": LLMDataAgent(self.llm_service),
@@ -55,7 +55,7 @@ class LangGraphOrchestrator:
         workflow = StateGraph(ConversationState)
         
         # Adiciona todos os nós
-        workflow.add_node("onboarding", self._onboarding_node)  # NOVO
+        workflow.add_node("onboarding", self._onboarding_node)
         workflow.add_node("reception", self._reception_node)
         workflow.add_node("classification", self._classification_node)
         workflow.add_node("data_analysis", self._data_node)
@@ -71,7 +71,7 @@ class LangGraphOrchestrator:
             "intent_router",
             self._route_to_agent,
             {
-                "onboarding": "onboarding",  # NOVO
+                "onboarding": "onboarding",
                 "reception": "reception",
                 "classification": "classification", 
                 "data": "data_analysis",
@@ -81,7 +81,7 @@ class LangGraphOrchestrator:
         )
         
         # Adiciona edges
-        workflow.add_edge("onboarding", "response_formatter")  # NOVO
+        workflow.add_edge("onboarding", "response_formatter")
         workflow.add_edge("reception", "response_formatter")
         workflow.add_edge("classification", "response_formatter")
         workflow.add_edge("data_analysis", "response_formatter")
