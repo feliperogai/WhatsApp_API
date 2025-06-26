@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import traceback
 import json
+import sys
 
 from app.core.queue_manager import QueueManager, Priority
 from app.core.rate_limiter import AdaptiveRateLimiter
@@ -24,23 +25,25 @@ load_dotenv()
 # Garante que o diretório de logs existe
 os.makedirs('logs', exist_ok=True)
 
-# Configuração de logging mais detalhada
+# Configuração robusta de logging para FastAPI/Uvicorn
 logging.basicConfig(
     level=logging.DEBUG if os.getenv("DEBUG", "False").lower() == "true" else logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('logs/jarvis.log', mode='a')
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('logs/jarvis.log', mode='a', encoding='utf-8')
     ]
 )
-# Força encoding UTF-8 no StreamHandler para evitar UnicodeEncodeError
-for handler in logging.getLogger().handlers:
-    if hasattr(handler.stream, 'reconfigure'):
-        try:
-            handler.stream.reconfigure(encoding='utf-8')
-        except Exception:
-            pass
+
 logger = logging.getLogger(__name__)
+logger.propagate = True
+logger.setLevel(logging.DEBUG if os.getenv("DEBUG", "False").lower() == "true" else logging.INFO)
+
+# Garante handler no logger do módulo (caso Uvicorn sobrescreva root)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
 
 # Global instances
 app_instances = {
@@ -329,12 +332,12 @@ async def root():
 async def whatsapp_webhook(request: Request):
     # Loga corpo bruto e headers
     raw_body = await request.body()
-    print("="*60)
-    print(">>> RAW BODY RECEBIDO <<<")
-    print(raw_body)
-    print(">>> HEADERS <<<")
-    print(request.headers)
-    print("="*60)
+    logger.info("="*60)
+    logger.info(">>> RAW BODY RECEBIDO <<<")
+    logger.info(raw_body)
+    logger.info(">>> HEADERS <<<")
+    logger.info(dict(request.headers))
+    logger.info("="*60)
     # Extrai campos do form ou do json
     From = Body = MessageSid = None
     data = {}
@@ -343,17 +346,17 @@ async def whatsapp_webhook(request: Request):
         From = data.get("From")
         Body = data.get("Body")
         MessageSid = data.get("MessageSid")
-        print(f"[Webhook] Dados recebidos (form): {dict(data)}")
+        logger.info(f"[Webhook] Dados recebidos (form): {dict(data)}")
     except Exception as e:
-        print(f"[Webhook] Não foi possível ler como form: {e}")
+        logger.warning(f"[Webhook] Não foi possível ler como form: {e}")
         try:
             data = await request.json()
             From = data.get("From")
             Body = data.get("Body")
             MessageSid = data.get("MessageSid")
-            print(f"[Webhook] Dados recebidos (json): {data}")
+            logger.info(f"[Webhook] Dados recebidos (json): {data}")
         except Exception as e2:
-            print(f"[Webhook] Não foi possível ler como json: {e2}")
+            logger.error(f"[Webhook] Não foi possível ler como json: {e2}")
             data = {}
     # Se algum campo obrigatório não veio, retorna erro detalhado
     missing = []
@@ -361,8 +364,21 @@ async def whatsapp_webhook(request: Request):
         if value is None:
             missing.append(field)
     if missing:
-        print(f"[Webhook] Campos obrigatórios ausentes: {missing}")
-        return JSONResponse(status_code=422, content={"error": "Campos obrigatórios ausentes", "missing": missing, "received": dict(data)})
+        logger.error(f"[Webhook] Campos obrigatórios ausentes: {missing} | Corpo recebido: {dict(data)} | RAW: {raw_body}")
+        # Resposta amigável para o usuário no WhatsApp
+        fallback_text = (
+            "Oi! Tive um probleminha ao receber sua mensagem (faltou algum dado importante). "
+            "Pode tentar novamente ou digitar 'menu'? Se o problema persistir, aguarde alguns minutos."
+        )
+        xml_response = app_instances["twilio_service"].create_webhook_response(fallback_text)
+        logger.info(f"📤 MENSAGEM ENVIADA (FALTA DADO) | To: {From} | Body: {fallback_text}")
+        return Response(
+            content=xml_response,
+            media_type="application/xml"
+        )
+    
+    # Log detalhado da requisição recebida
+    logger.info(f"📥 MENSAGEM RECEBIDA | From: {From} | Body: {Body} | MessageSid: {MessageSid}")
     
     # Loga status do LLMService
     llm_service = app_instances.get("llm_service")
@@ -388,6 +404,7 @@ async def whatsapp_webhook(request: Request):
         reason = getattr(llm_service, "connection_error", "Motivo desconhecido")
         response_text = f"Desculpe, estou temporariamente fora do ar para respostas inteligentes. Motivo: {reason}. Tente novamente em alguns minutos ou digite 'menu'."
         xml_response = app_instances["twilio_service"].create_webhook_response(response_text)
+        logger.info(f"📤 MENSAGEM ENVIADA (FALTA DADO) | To: {From} | Body: {fallback_text}")
         return Response(
             content=xml_response,
             media_type="application/xml"
@@ -473,7 +490,7 @@ async def whatsapp_webhook(request: Request):
         # Erro crítico mais humano
         error_text = "🆘 Erro crítico no sistema. Por favor, tente novamente mais tarde."
         xml_response = app_instances["twilio_service"].create_webhook_response(error_text)
-        logger.info(f"📤 MENSAGEM ENVIADA | To: {From} | Body: {error_text}")
+        logger.info(f"📤 MENSAGEM ENVIADA (ERRO CRÍTICO) | To: {From} | Body: {error_text}")
         return Response(
             content=xml_response,
             media_type="application/xml"
