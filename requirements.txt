@@ -1,31 +1,5 @@
-# Core
 fastapi
 uvicorn[standard]
-pydantic
-pydantic-settings
-
-# WhatsApp
-twilio
-
-# Async HTTP
-aiohttp
-httpx
-
-# Redis
-redis
-
-# LangChain & AI
-langchain
-langchain-community
-langgraph
-openai
-
-# Utils
 python-dotenv
 python-multipart
-loguru
-psutil
-
-# Development
-pytest
-pytest-asyncio
+twilio

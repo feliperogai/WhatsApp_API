@@ -1,746 +1,438 @@
-from fastapi import FastAPI, Request, HTTPException, Form, Response
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import FastAPI, Request, Response, BackgroundTasks
+from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 import logging
-import redis.asyncio as redis
-from typing import Dict, Any, Optional, List
 import os
-from dotenv import load_dotenv
-from datetime import datetime
-import traceback
 import json
-import sys
-
-from app.core.queue_manager import QueueManager, Priority
-from app.core.rate_limiter import AdaptiveRateLimiter
-from app.services.llm_service import LLMService
-from app.services.message_processor import MessageProcessor
-from app.services.twilio_service import TwilioService
-from app.core.session_manager import SessionManager
-from app.core.langgraph_orchestrator import LangGraphOrchestrator
-from app.models.message import WhatsAppMessage
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
+import re
+import asyncio
 
 load_dotenv()
 
-# Garante que o diretório de logs existe
-os.makedirs('logs', exist_ok=True)
-
-# Configuração robusta de logging para FastAPI/Uvicorn
+# Configuração de logging
 logging.basicConfig(
-    level=logging.DEBUG if os.getenv("DEBUG", "False").lower() == "true" else logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('logs/jarvis.log', mode='a', encoding='utf-8')
-    ]
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
-logger.propagate = True
-logger.setLevel(logging.DEBUG if os.getenv("DEBUG", "False").lower() == "true" else logging.INFO)
 
-# Garante handler no logger do módulo (caso Uvicorn sobrescreva root)
-if not logger.hasHandlers():
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    logger.addHandler(handler)
+# Arquivo para persistir sessões
+SESSIONS_FILE = "sessions.json"
 
-# Global instances
-app_instances = {
-    "redis": None,
-    "queue_manager": None,
-    "rate_limiter": None,
-    "llm_service": None,
-    "twilio_service": None,
-    "message_processor": None,
-    "session_manager": None,
-    "orchestrator": None
-}
+class SessionManager:
+    """Gerenciador de sessões com persistência"""
+    
+    def __init__(self):
+        self.sessions: Dict[str, Dict[str, Any]] = {}
+        self.load_sessions()
+    
+    def load_sessions(self):
+        """Carrega sessões do arquivo"""
+        try:
+            if os.path.exists(SESSIONS_FILE):
+                with open(SESSIONS_FILE, 'r') as f:
+                    data = json.load(f)
+                    # Converte strings de data para datetime
+                    for phone, session in data.items():
+                        if 'created_at' in session:
+                            session['created_at'] = datetime.fromisoformat(session['created_at'])
+                        if 'updated_at' in session:
+                            session['updated_at'] = datetime.fromisoformat(session['updated_at'])
+                    self.sessions = data
+                logger.info(f"Carregadas {len(self.sessions)} sessões")
+        except Exception as e:
+            logger.error(f"Erro ao carregar sessões: {e}")
+    
+    def save_sessions(self):
+        """Salva sessões no arquivo"""
+        try:
+            data = {}
+            for phone, session in self.sessions.items():
+                data[phone] = session.copy()
+                # Converte datetime para string
+                if 'created_at' in data[phone] and isinstance(data[phone]['created_at'], datetime):
+                    data[phone]['created_at'] = data[phone]['created_at'].isoformat()
+                if 'updated_at' in data[phone] and isinstance(data[phone]['updated_at'], datetime):
+                    data[phone]['updated_at'] = data[phone]['updated_at'].isoformat()
+            
+            with open(SESSIONS_FILE, 'w') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Erro ao salvar sessões: {e}")
+    
+    def get_or_create_session(self, phone: str) -> Dict[str, Any]:
+        """Obtém ou cria sessão"""
+        # Remove sessões expiradas
+        self.cleanup_expired_sessions()
+        
+        if phone not in self.sessions:
+            self.sessions[phone] = {
+                "phone": phone,
+                "state": "initial",
+                "data": {},
+                "history": [],
+                "created_at": datetime.now(),
+                "updated_at": datetime.now()
+            }
+            self.save_sessions()
+        
+        return self.sessions[phone]
+    
+    def update_session(self, phone: str, updates: Dict[str, Any]):
+        """Atualiza sessão"""
+        if phone in self.sessions:
+            self.sessions[phone].update(updates)
+            self.sessions[phone]["updated_at"] = datetime.now()
+            self.save_sessions()
+    
+    def cleanup_expired_sessions(self):
+        """Remove sessões inativas há mais de 24h"""
+        now = datetime.now()
+        expired = []
+        
+        for phone, session in self.sessions.items():
+            updated = session.get("updated_at", now)
+            if isinstance(updated, str):
+                updated = datetime.fromisoformat(updated)
+            
+            if now - updated > timedelta(hours=24):
+                expired.append(phone)
+        
+        for phone in expired:
+            del self.sessions[phone]
+            logger.info(f"Sessão expirada removida: {phone}")
+        
+        if expired:
+            self.save_sessions()
+
+# Instância global do gerenciador
+session_manager = SessionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Starting Jarvis WhatsApp Service...")
-    
-    try:
-        # Redis connection
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        logger.info(f"📡 Connecting to Redis at: {redis_url}")
-        
-        app_instances["redis"] = redis.from_url(redis_url, decode_responses=False)
-        await app_instances["redis"].ping()
-        logger.info("✅ Redis connected successfully")
-        
-        # Session Manager
-        app_instances["session_manager"] = SessionManager()
-        await app_instances["session_manager"].initialize()
-        logger.info("✅ Session Manager initialized")
-        
-        # Queue Manager
-        app_instances["queue_manager"] = QueueManager(
-            redis_client=app_instances["redis"],
-            max_queue_size=int(os.getenv("MAX_QUEUE_SIZE", "1000")),
-            max_workers=int(os.getenv("MAX_WORKERS", "3")),
-            max_retries=int(os.getenv("MAX_RETRIES", "3"))
-        )
-        
-        # Rate Limiter
-        app_instances["rate_limiter"] = AdaptiveRateLimiter(
-            redis_client=app_instances["redis"],
-            global_rate=float(os.getenv("GLOBAL_RATE_LIMIT", "10"))/60,
-            global_burst=int(os.getenv("GLOBAL_BURST", "5")),
-            user_rate=float(os.getenv("USER_RATE_LIMIT", "3"))/60,
-            user_burst=int(os.getenv("USER_BURST", "2"))
-        )
-        
-        # LLM Service - com melhor tratamento de erro
-        llm_initialized = False
-        try:
-            app_instances["llm_service"] = LLMService()
-            await app_instances["llm_service"].initialize()
-            llm_initialized = app_instances["llm_service"].is_initialized
-            
-            if llm_initialized:
-                logger.info("✅ LLM Service initialized successfully")
-                # Testa LLM imediatamente
-                test_response = await app_instances["llm_service"].generate_response(
-                    "teste", "Responda apenas: OK"
-                )
-                logger.info(f"🧪 LLM test response: {test_response}")
-            else:
-                logger.warning("⚠️ LLM Service initialized but not connected to Ollama")
-        except Exception as e:
-            logger.error(f"❌ LLM Service initialization failed: {e}")
-            logger.warning("⚠️ Continuing with fallback responses only...")
-        
-        # Twilio Service
-        try:
-            app_instances["twilio_service"] = TwilioService()
-            logger.info("✅ Twilio Service initialized")
-        except Exception as e:
-            logger.error(f"❌ Twilio Service initialization failed: {e}")
-            raise
-        
-        # LangGraph Orchestrator - inicializa SEMPRE, mesmo se LLM estiver em fallback
-        try:
-            app_instances["orchestrator"] = LangGraphOrchestrator(
-                app_instances["session_manager"],
-                app_instances["llm_service"]
-            )
-            logger.info("✅ LangGraph Orchestrator initialized (modo normal ou fallback)")
-        except Exception as e:
-            logger.error(f"❌ Orchestrator initialization failed: {e}")
-            app_instances["orchestrator"] = None
-        
-        # Message Processor
-        if app_instances["orchestrator"]:
-            app_instances["message_processor"] = MessageProcessor(
-                orchestrator=app_instances["orchestrator"],
-                twilio_service=app_instances["twilio_service"],
-                rate_limiter=app_instances["rate_limiter"]
-            )
-            
-            # Start queue workers
-            await app_instances["queue_manager"].start_workers(
-                app_instances["message_processor"].process_queued_message
-            )
-            logger.info("✅ Queue workers started")
-        
-        logger.info("✅ Jarvis WhatsApp Service started successfully")
-        logger.info(f"📊 LLM Status: {'Connected' if llm_initialized else 'Fallback Mode'}")
-        
-    except Exception as e:
-        logger.error(f"❌ Critical error during startup: {e}", exc_info=True)
-        # Permite que o serviço inicie mesmo com erros parciais
-    
+    logger.info("🚀 Iniciando Jarvis WhatsApp Extended...")
+    # Agenda limpeza periódica
+    asyncio.create_task(periodic_cleanup())
     yield
-    
-    # Shutdown
-    logger.info("🛑 Shutting down Jarvis WhatsApp Service...")
-    
-    try:
-        if app_instances["queue_manager"]:
-            await app_instances["queue_manager"].stop_workers()
-        
-        if app_instances["llm_service"]:
-            await app_instances["llm_service"].cleanup()
-        
-        if app_instances["redis"]:
-            await app_instances["redis"].close()
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
-    
-    logger.info("✅ Jarvis WhatsApp Service stopped")
+    logger.info("🛑 Parando Jarvis WhatsApp...")
+    # Salva sessões finais
+    session_manager.save_sessions()
+
+async def periodic_cleanup():
+    """Limpeza periódica de sessões"""
+    while True:
+        await asyncio.sleep(3600)  # A cada hora
+        session_manager.cleanup_expired_sessions()
 
 app = FastAPI(
-    title="Jarvis WhatsApp Service",
-    description="WhatsApp AI Assistant with Queue Management and LangGraph",
-    version="3.0",
+    title="Jarvis WhatsApp Extended",
+    description="Sistema de coleta de dados com mais recursos",
+    version="2.0",
     lifespan=lifespan
 )
 
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    try:
-        # Status detalhado dos componentes
-        redis_status = "🟢 Online" if app_instances.get("redis") else "🔴 Offline"
+class ExtendedConversationFlow:
+    """Fluxo de conversa estendido com validações"""
+    
+    @staticmethod
+    def validate_name(name: str) -> tuple[bool, str]:
+        """Valida nome do usuário"""
+        name = name.strip()
         
-        llm_status = "🔴 Offline"
-        llm_details = ""
-        if app_instances.get("llm_service"):
-            if app_instances["llm_service"].is_initialized:
-                llm_status = "🟢 Online"
-                status = await app_instances["llm_service"].get_service_status()
-                llm_details = f"""
-                <div class="metric">
-                    <div>Ollama URL</div>
-                    <div class="value" style="font-size: 1em;">{status.get('ollama_url', 'N/A')}</div>
-                </div>
-                <div class="metric">
-                    <div>Model</div>
-                    <div class="value" style="font-size: 1em;">{status.get('model', 'N/A')}</div>
-                </div>
-                """
+        # Verifica se é muito curto
+        if len(name) < 2:
+            return False, "Por favor, digite seu nome completo."
+        
+        # Verifica se tem números
+        if any(char.isdigit() for char in name):
+            return False, "O nome não pode conter números. Por favor, digite seu nome correto."
+        
+        # Verifica se é só uma palavra (aviso, não erro)
+        words = name.split()
+        if len(words) == 1:
+            return True, f"Ok {name}! Você pode me dizer seu nome completo? (ou digite 'pular' para continuar)"
+        
+        return True, ""
+    
+    @staticmethod
+    def validate_company(company: str) -> tuple[bool, str]:
+        """Valida nome da empresa"""
+        company = company.strip()
+        
+        if len(company) < 2:
+            return False, "Por favor, digite o nome da empresa."
+        
+        # Permite números em nomes de empresa
+        return True, ""
+    
+    @staticmethod
+    def extract_email(text: str) -> Optional[str]:
+        """Extrai email do texto"""
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        match = re.search(email_pattern, text)
+        return match.group(0) if match else None
+    
+    @staticmethod
+    def extract_phone_number(text: str) -> Optional[str]:
+        """Extrai telefone do texto"""
+        # Remove tudo exceto números
+        numbers = re.sub(r'\D', '', text)
+        
+        # Verifica se tem tamanho de telefone BR
+        if len(numbers) == 11:  # Com DDD
+            return f"+55{numbers}"
+        elif len(numbers) == 13 and numbers.startswith("55"):  # Com código país
+            return f"+{numbers}"
+        
+        return None
+    
+    @staticmethod
+    def process_message(phone: str, message: str) -> str:
+        """Processa mensagem com validações e estados extras"""
+        session = session_manager.get_or_create_session(phone)
+        current_state = session["state"]
+        user_data = session["data"]
+        msg_lower = message.lower().strip()
+        
+        # Adiciona mensagem ao histórico
+        session["history"].append({
+            "timestamp": datetime.now().isoformat(),
+            "from": "user",
+            "message": message
+        })
+        
+        logger.info(f"📱 {phone} | Estado: {current_state} | Msg: {message}")
+        
+        # Comandos globais (funcionam em qualquer estado)
+        if msg_lower in ["resetar", "recomeçar", "reset", "/start"]:
+            session["state"] = "initial"
+            session["data"] = {}
+            session_manager.update_session(phone, session)
+            return "🔄 Ok! Vamos recomeçar do início!\n\nOi! Tudo bem? 😊 Sou o Alex, seu assistente virtual! Qual é o seu nome?"
+        
+        if msg_lower in ["ajuda", "help", "/help"]:
+            return """ℹ️ **Comandos disponíveis:**
+• Digite normalmente para conversar
+• 'resetar' - Recomeça do início
+• 'status' - Ver seus dados
+• 'ajuda' - Esta mensagem
+
+📱 Estou aqui para coletar seus dados e ajudar com:
+• Relatórios e dados
+• Suporte técnico
+• Agendamentos"""
+        
+        if msg_lower in ["status", "meus dados", "/status"]:
+            if user_data:
+                info = "📋 **Seus dados:**\n"
+                info += f"• Nome: {user_data.get('nome', 'Não informado')}\n"
+                info += f"• Empresa: {user_data.get('empresa', 'Não informada')}\n"
+                info += f"• Email: {user_data.get('email', 'Não informado')}\n"
+                info += f"• Telefone: {user_data.get('telefone', 'Não informado')}"
+                return info
             else:
-                llm_status = "🟡 Fallback Mode"
+                return "📋 Ainda não tenho seus dados. Vamos começar? Digite 'oi'!"
         
-        orchestrator_status = "🟢 Online" if app_instances.get("orchestrator") else "🔴 Offline"
-        twilio_status = "🟢 Online" if app_instances.get("twilio_service") else "🔴 Offline"
+        # Estados da conversa
+        response = ""
         
-        # Estatísticas
-        active_sessions = 0
-        if app_instances.get("session_manager"):
-            active_sessions = await app_instances["session_manager"].get_active_sessions_count()
+        # INICIAL
+        if current_state == "initial":
+            session["state"] = "waiting_name"
+            response = "Oi! Tudo bem? 😊 Sou o Alex, seu assistente virtual da Jarvis!\n\nQual é o seu nome?"
         
-        return HTMLResponse(f"""
-        <html>
-        <head>
-            <title>Jarvis WhatsApp Service</title>
-            <style>
-                body {{ 
-                    font-family: Arial, sans-serif; 
-                    max-width: 1200px; 
-                    margin: 0 auto; 
-                    padding: 20px;
-                    background: #1a1a1a;
-                    color: #fff;
-                }}
-                .status {{ 
-                    background: #2a2a2a; 
-                    padding: 20px; 
-                    border-radius: 10px; 
-                    margin: 20px 0;
-                }}
-                .metric {{
-                    display: inline-block;
-                    margin: 10px 20px 10px 0;
-                    padding: 15px;
-                    background: #333;
-                    border-radius: 8px;
-                }}
-                .metric .value {{
-                    font-size: 2em;
-                    font-weight: bold;
-                    color: #4CAF50;
-                }}
-                .endpoint {{
-                    background: #333;
-                    padding: 10px;
-                    margin: 5px 0;
-                    border-radius: 5px;
-                    font-family: monospace;
-                }}
-                h1, h2 {{ color: #4CAF50; }}
-                a {{ color: #4CAF50; text-decoration: none; }}
-                a:hover {{ text-decoration: underline; }}
-                .warning {{
-                    background: #ff9800;
-                    color: #000;
-                    padding: 10px;
-                    border-radius: 5px;
-                    margin: 10px 0;
-                }}
-                .debug-info {{
-                    background: #444;
-                    padding: 15px;
-                    border-radius: 8px;
-                    margin: 20px 0;
-                    font-family: monospace;
-                    font-size: 0.9em;
-                }}
-            </style>
-        </head>
-        <body>
-            <h1>🤖 Jarvis WhatsApp Service v3.0</h1>
-            <p>AI Assistant with Queue Management and LangGraph</p>
+        # ESPERANDO NOME
+        elif current_state == "waiting_name":
+            is_valid, validation_msg = ExtendedConversationFlow.validate_name(message)
             
-            <div class="status">
-                <h2>System Status</h2>
-                <div class="metric">
-                    <div>Redis</div>
-                    <div class="value">{redis_status}</div>
-                </div>
-                <div class="metric">
-                    <div>LLM Service</div>
-                    <div class="value">{llm_status}</div>
-                </div>
-                <div class="metric">
-                    <div>Orchestrator</div>
-                    <div class="value">{orchestrator_status}</div>
-                </div>
-                <div class="metric">
-                    <div>Twilio</div>
-                    <div class="value">{twilio_status}</div>
-                </div>
-                <div class="metric">
-                    <div>Active Sessions</div>
-                    <div class="value">{active_sessions}</div>
-                </div>
-                {llm_details}
-            </div>
-            
-            <h2>API Endpoints</h2>
-            <div class="endpoint">POST /webhook/whatsapp - WhatsApp webhook</div>
-            <div class="endpoint">GET /health - Health check</div>
-            <div class="endpoint">GET /status - Detailed system status</div>
-            <div class="endpoint">GET /llm/status - LLM service status</div>
-            <div class="endpoint">POST /llm/test - Test LLM directly</div>
-            <div class="endpoint">GET /debug/test-webhook - Test webhook response</div>
-            
-            <h2>Quick Tests</h2>
-            <p>
-                <a href="/health">🏥 Health Check</a> | 
-                <a href="/status">📊 Full Status</a> |
-                <a href="/llm/status">🧠 LLM Status</a> |
-                <a href="/debug/test-webhook">🧪 Test Webhook</a> |
-                <a href="/docs">📚 API Docs</a>
-            </p>
-            
-            <div class="debug-info">
-                <h3>Debug Information</h3>
-                <p>Timestamp: {datetime.now().isoformat()}</p>
-                <p>Environment: {os.getenv('ENVIRONMENT', 'development')}</p>
-                <p>Log Level: {os.getenv('LOG_LEVEL', 'INFO')}</p>
-            </div>
-        </body>
-        </html>
-        """)
-    except Exception as e:
-        logger.error(f"Error rendering root page: {e}")
-        return HTMLResponse("<h1>Error loading page</h1>")
-
-@app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
-    try:
-        # Extrai dados do webhook
-        From = Body = MessageSid = None
-        data = {}
+            if not is_valid:
+                response = f"❌ {validation_msg}"
+            else:
+                user_data["nome"] = message.title()
+                
+                if validation_msg and msg_lower != "pular":  # Pedindo nome completo
+                    session["state"] = "waiting_full_name"
+                    response = validation_msg
+                else:
+                    session["state"] = "waiting_company"
+                    primeiro_nome = user_data["nome"].split()[0]
+                    response = f"Prazer em te conhecer, {primeiro_nome}! 😊\n\nDe qual empresa você é?"
         
-        # Tenta ler como form data (padrão Twilio)
-        try:
-            data = await request.form()
-            From = data.get("From")
-            Body = data.get("Body")
-            MessageSid = data.get("MessageSid")
-            logger.info(f"[Webhook] Form data recebido: From={From}, Body={Body}, MessageSid={MessageSid}")
-        except:
-            # Tenta ler como JSON
-            try:
-                data = await request.json()
-                From = data.get("From")
-                Body = data.get("Body")
-                MessageSid = data.get("MessageSid")
-                logger.info(f"[Webhook] JSON data recebido: From={From}, Body={Body}, MessageSid={MessageSid}")
-            except:
-                logger.error("[Webhook] Falha ao parsear dados")
-        
-        # Valida campos obrigatórios
-        if not all([From, Body, MessageSid]):
-            logger.error(f"[Webhook] Campos faltando - From: {From}, Body: {Body}, MessageSid: {MessageSid}")
-            fallback_text = "Oi! Não consegui entender sua mensagem. Pode tentar novamente?"
-            xml_response = app_instances["twilio_service"].create_webhook_response(fallback_text)
-            return Response(content=xml_response, media_type="application/xml")
-        
-        # Log da mensagem recebida
-        logger.info(f"📥 MENSAGEM RECEBIDA | From: {From} | Body: {Body} | MessageSid: {MessageSid}")
-        
-        # Verifica se o orchestrator está disponível
-        if not app_instances.get("orchestrator"):
-            logger.error("❌ Orchestrator não disponível")
+        # ESPERANDO NOME COMPLETO (opcional)
+        elif current_state == "waiting_full_name":
+            if msg_lower != "pular":
+                user_data["nome"] = message.title()
             
-            # Usa respostas naturais de fallback
-            fallback_responses = {
-                "oi": "Opa! Tudo bem? Como posso te ajudar hoje? 😊",
-                "ola": "Oi! Que bom falar com você! O que você precisa?",
-                "olá": "Olá! Como você está? Em que posso ajudar?",
-                "td bem": "Tudo ótimo por aqui! E com você? Como posso te ajudar hoje?",
-                "tudo bem": "Tudo bem sim! E você, como está? Precisa de alguma coisa?",
-                "bom dia": "Bom dia! Espero que seu dia esteja sendo ótimo! Como posso ajudar?",
-                "boa tarde": "Boa tarde! Como está seu dia? Posso te ajudar com algo?",
-                "boa noite": "Boa noite! Como posso te ajudar agora?",
-            }
-            
-            body_lower = Body.lower().strip()
-            response_text = fallback_responses.get(body_lower, 
-                "Oi! Tô aqui pra te ajudar! Me conta o que você precisa - posso puxar relatórios, resolver problemas técnicos, marcar reuniões... O que seria bom pra você?")
-            
-            xml_response = app_instances["twilio_service"].create_webhook_response(response_text)
-            return Response(content=xml_response, media_type="application/xml")
+            session["state"] = "waiting_company"
+            primeiro_nome = user_data["nome"].split()[0]
+            response = f"Perfeito, {primeiro_nome}! 👍\n\nAgora me diz: de qual empresa você é?"
         
-        # Extrai número de telefone
-        phone_number = app_instances["twilio_service"].extract_phone_number(From)
-        logger.info(f"📞 Número extraído: {phone_number}")
-        
-        # Cria mensagem WhatsApp
-        message = WhatsAppMessage(
-            message_id=MessageSid,
-            from_number=phone_number,
-            to_number=app_instances["twilio_service"].phone_number,
-            body=Body
-        )
-        
-        # Processa através do orchestrator LLM
-        try:
-            import asyncio
-            logger.info("🤖 Processando mensagem com IA...")
+        # ESPERANDO EMPRESA
+        elif current_state == "waiting_company":
+            is_valid, validation_msg = ExtendedConversationFlow.validate_company(message)
             
-            # Timeout de 25 segundos para dar tempo do LLM responder
-            response = await asyncio.wait_for(
-                app_instances["orchestrator"].process_message(message),
-                timeout=25.0
-            )
-            
-            response_text = response.response_text
-            logger.info(f"✅ Resposta gerada pelo agente {response.agent_id}")
-            logger.info(f"📝 Resposta: {response_text[:100]}...")
-            
-        except asyncio.TimeoutError:
-            logger.error("⏱️ Timeout ao processar mensagem")
-            response_text = "Opa, demorei demais pensando aqui! 😅 Pode repetir? Prometo ser mais rápido!"
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao processar: {type(e).__name__}: {str(e)}")
-            
-            # Respostas de erro mais naturais
-            import random
-            error_responses = [
-                "Eita, bugou aqui! 🐛 Me dá um segundinho que já volto!",
-                "Ops, travei! 😵 Tenta de novo? Prometo que vou funcionar!",
-                "Xiii, deu ruim aqui! Mas calma, já tô voltando! 🔧",
-                "Poxa, tive um probleminha técnico. Pode repetir? 🙏"
-            ]
-            response_text = random.choice(error_responses)
+            if not is_valid:
+                response = f"❌ {validation_msg}"
+            else:
+                user_data["empresa"] = message.title()
+                session["state"] = "waiting_contact_preference"
+                primeiro_nome = user_data["nome"].split()[0]
+                response = f"Excelente, {primeiro_nome}! A {message.title()} é nossa parceira! 🎯\n\n"
+                response += "Para finalizar seu cadastro, como prefere que eu entre em contato?\n"
+                response += "📧 Email ou 📱 WhatsApp? (ou digite 'pular' para ir direto aos serviços)"
         
-        # Cria resposta TwiML
-        xml_response = app_instances["twilio_service"].create_webhook_response(response_text)
+        # ESPERANDO PREFERÊNCIA DE CONTATO
+        elif current_state == "waiting_contact_preference":
+            primeiro_nome = user_data["nome"].split()[0]
+            
+            if msg_lower in ["pular", "depois", "não"]:
+                session["state"] = "ready"
+                response = f"Sem problemas, {primeiro_nome}! 😊\n\n"
+                response += "Como posso te ajudar hoje?\n"
+                response += "• 📊 Ver relatórios e dados\n"
+                response += "• 🔧 Suporte técnico\n"
+                response += "• 📅 Agendar reunião"
+            
+            elif "email" in msg_lower or "@" in message:
+                # Extrai email se já veio junto
+                email = ExtendedConversationFlow.extract_email(message)
+                if email:
+                    user_data["email"] = email
+                    user_data["contato_preferido"] = "email"
+                    session["state"] = "ready"
+                    response = f"✅ Email {email} salvo!\n\n"
+                    response += "Como posso te ajudar hoje?"
+                else:
+                    session["state"] = "waiting_email"
+                    response = "📧 Por favor, digite seu email:"
+            
+            elif "whatsapp" in msg_lower or "zap" in msg_lower:
+                user_data["telefone"] = phone  # Usa o próprio número
+                user_data["contato_preferido"] = "whatsapp"
+                session["state"] = "ready"
+                response = f"✅ Vou usar este WhatsApp para contato!\n\n"
+                response += "Como posso te ajudar hoje?"
+            
+            else:
+                response = "Por favor, escolha: Email ou WhatsApp? (ou 'pular')"
         
-        logger.info(f"📤 RESPOSTA ENVIADA | To: {From} | Body: {response_text}")
-        return Response(content=xml_response, media_type="application/xml")
+        # ESPERANDO EMAIL
+        elif current_state == "waiting_email":
+            email = ExtendedConversationFlow.extract_email(message)
+            
+            if email:
+                user_data["email"] = email
+                session["state"] = "ready"
+                primeiro_nome = user_data["nome"].split()[0]
+                response = f"✅ Perfeito, {primeiro_nome}! Email salvo.\n\n"
+                response += "Como posso te ajudar hoje?\n"
+                response += "• 📊 Ver relatórios\n"
+                response += "• 🔧 Suporte técnico\n"
+                response += "• 📅 Agendar reunião"
+            else:
+                response = "❌ Email inválido. Por favor, digite um email válido (ou 'pular'):"
         
-    except Exception as e:
-        logger.critical(f"💥 ERRO CRÍTICO NO WEBHOOK: {type(e).__name__} - {str(e)}")
-        import traceback
-        logger.critical(traceback.format_exc())
+        # PRONTO - Conversa normal
+        elif current_state == "ready":
+            primeiro_nome = user_data["nome"].split()[0]
+            empresa = user_data["empresa"]
+            
+            # Respostas baseadas em intenção
+            if any(word in msg_lower for word in ["relatório", "dados", "vendas", "dashboard", "kpi", "métrica"]):
+                response = f"📊 **RELATÓRIO - {empresa.upper()}**\n\n"
+                response += f"Olá {primeiro_nome}, aqui estão seus dados:\n\n"
+                response += "**Vendas (Novembro/2024)**\n"
+                response += "• Faturamento: R$ 125.000\n"
+                response += "• Crescimento: +15% 📈\n"
+                response += "• Novos clientes: 47\n"
+                response += "• Ticket médio: R$ 2.659\n\n"
+                response += "**Performance**\n"
+                response += "• Taxa conversão: 3.2%\n"
+                response += "• Churn: 2.1% ✅\n"
+                response += "• NPS: 72 😊\n\n"
+                response += "Quer ver algum dado específico?"
+            
+            elif any(word in msg_lower for word in ["erro", "problema", "bug", "ajuda", "não funciona", "travou"]):
+                response = f"🔧 **SUPORTE TÉCNICO**\n\n"
+                response += f"{primeiro_nome}, vou te ajudar! Me conta:\n\n"
+                response += "1️⃣ Qual sistema está com problema?\n"
+                response += "2️⃣ Que erro aparece?\n"
+                response += "3️⃣ Quando começou?\n\n"
+                response += f"🎫 Vou criar um chamado prioritário para {empresa}."
+                
+                # Se tem email, menciona
+                if user_data.get("email"):
+                    response += f"\n\n📧 Enviarei atualizações para: {user_data['email']}"
+            
+            elif any(word in msg_lower for word in ["agendar", "marcar", "reunião", "horário", "meeting", "call"]):
+                response = f"📅 **AGENDAMENTO**\n\n"
+                response += f"{primeiro_nome}, vamos agendar sua reunião!\n\n"
+                response += "**Horários disponíveis:**\n"
+                response += "• Segunda 28/11 - 14h ou 16h\n"
+                response += "• Terça 29/11 - 10h ou 15h\n"
+                response += "• Quarta 30/11 - 11h ou 14h\n\n"
+                response += "Qual horário fica melhor? (ex: 'segunda 14h')"
+                session["state"] = "scheduling"
+            
+            elif any(word in msg_lower for word in ["tchau", "obrigado", "até", "valeu", "fim", "sair"]):
+                response = f"Foi um prazer ajudar, {primeiro_nome}! 😊\n\n"
+                response += f"Sempre que precisar de algo para a {empresa}, é só me chamar!\n\n"
+                
+                # Menciona contato preferido
+                if user_data.get("contato_preferido") == "email":
+                    response += f"📧 Qualquer novidade, envio para {user_data['email']}\n"
+                
+                response += "Até mais! 👋"
+                
+                # Opcional: limpar sessão após despedida
+                # session["state"] = "initial"
+                # session["data"] = {}
+            
+            else:
+                # Não entendeu - oferece opções
+                response = f"{primeiro_nome}, não entendi bem. 🤔\n\n"
+                response += "Posso te ajudar com:\n\n"
+                response += "📊 **Relatórios** - Digite 'relatório' ou 'dados'\n"
+                response += "🔧 **Suporte** - Digite 'problema' ou 'erro'\n"
+                response += "📅 **Agendamento** - Digite 'agendar' ou 'reunião'\n\n"
+                response += "O que você precisa?"
         
-        error_text = "🆘 Erro crítico no sistema. Por favor, tente novamente mais tarde."
-        xml_response = app_instances["twilio_service"].create_webhook_response(error_text)
-        return Response(content=xml_response, media_type="application/xml")
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint com informações detalhadas"""
-    try:
-        health_data = {
-            "status": "healthy",
+        # AGENDAMENTO
+        elif current_state == "scheduling":
+            primeiro_nome = user_data["nome"].split()[0]
+            
+            if any(day in msg_lower for day in ["segunda", "terça", "quarta", "seg", "ter", "qua"]):
+                # Extrai horário
+                horario_match = re.search(r'(\d{1,2})[h:]?', message)
+                horario = horario_match.group(1) + "h" if horario_match else "14h"
+                
+                user_data["agendamento"] = f"{message} às {horario}"
+                session["state"] = "ready"
+                
+                response = f"✅ **AGENDAMENTO CONFIRMADO**\n\n"
+                response += f"{primeiro_nome}, agendei sua reunião:\n"
+                response += f"📅 {user_data['agendamento']}\n"
+                response += f"🏢 Empresa: {user_data['empresa']}\n\n"
+                
+                if user_data.get("email"):
+                    response += f"📧 Enviarei o convite para: {user_data['email']}\n"
+                
+                response += "\nAlgo mais que posso ajudar?"
+            
+            else:
+                response = "Por favor, escolha um dos horários disponíveis (ex: 'segunda 14h') ou digite 'cancelar':"
+        
+        # Atualiza sessão
+        session_manager.update_session(phone, session)
+        
+        # Adiciona resposta ao histórico
+        session["history"].append({
             "timestamp": datetime.now().isoformat(),
-            "components": {}
-        }
+            "from": "assistant",
+            "message": response
+        })
         
-        # Check Redis
-        try:
-            if app_instances.get("redis"):
-                await app_instances["redis"].ping()
-                health_data["components"]["redis"] = {
-                    "status": "connected",
-                    "healthy": True
-                }
-        except Exception as e:
-            health_data["components"]["redis"] = {
-                "status": "disconnected",
-                "healthy": False,
-                "error": str(e)
-            }
-            health_data["status"] = "degraded"
-        
-        # Check LLM
-        if app_instances.get("llm_service"):
-            llm_status = await app_instances["llm_service"].get_service_status()
-            health_data["components"]["llm"] = llm_status
-            if llm_status.get("status") != "online":
-                health_data["status"] = "degraded"
-        else:
-            health_data["components"]["llm"] = {
-                "status": "not_initialized",
-                "healthy": False
-            }
-        
-        # Check Sessions
-        if app_instances.get("session_manager"):
-            active_sessions = await app_instances["session_manager"].get_active_sessions_count()
-            health_data["components"]["sessions"] = {
-                "active": active_sessions,
-                "healthy": True
-            }
-        
-        # Check Orchestrator
-        if app_instances.get("orchestrator"):
-            health_data["components"]["orchestrator"] = {
-                "status": "online",
-                "healthy": True
-            }
-        else:
-            health_data["components"]["orchestrator"] = {
-                "status": "offline",
-                "healthy": False
-            }
-            health_data["status"] = "degraded"
-        
-        return health_data
-        
-    except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-
-@app.get("/status")
-async def get_detailed_status():
-    """Status detalhado do sistema"""
-    try:
-        status = {
-            "timestamp": datetime.now().isoformat(),
-            "environment": os.getenv("ENVIRONMENT", "development"),
-            "version": "3.0",
-            "components": {}
-        }
-        
-        # Redis status
-        if app_instances.get("redis"):
-            try:
-                await app_instances["redis"].ping()
-                info = await app_instances["redis"].info()
-                status["components"]["redis"] = {
-                    "status": "connected",
-                    "version": info.get("redis_version", "unknown"),
-                    "memory_used": info.get("used_memory_human", "unknown")
-                }
-            except Exception as e:
-                status["components"]["redis"] = {
-                    "status": "error",
-                    "error": str(e)
-                }
-        
-        # LLM status detalhado
-        if app_instances.get("llm_service"):
-            status["components"]["llm"] = await app_instances["llm_service"].get_service_status()
-        
-        # Session manager status
-        if app_instances.get("session_manager"):
-            active = await app_instances["session_manager"].get_active_sessions_count()
-            status["components"]["sessions"] = {
-                "active_sessions": active,
-                "status": "online"
-            }
-        
-        # Queue status
-        if app_instances.get("queue_manager"):
-            queue_status = await app_instances["queue_manager"].get_status()
-            status["components"]["queue"] = queue_status
-        
-        # Orchestrator status
-        if app_instances.get("orchestrator"):
-            orch_status = await app_instances["orchestrator"].get_workflow_status()
-            status["components"]["orchestrator"] = orch_status
-        
-        return status
-        
-    except Exception as e:
-        logger.error(f"Status error: {e}")
-        return {"status": "error", "error": str(e)}
-
-@app.get("/llm/status")
-async def get_llm_status():
-    """Status específico do LLM com teste de conectividade"""
-    try:
-        if not app_instances.get("llm_service"):
-            return {
-                "status": "not_initialized",
-                "error": "LLM service not available",
-                "timestamp": datetime.now().isoformat()
-            }
-        
-        # Status básico
-        status = await app_instances["llm_service"].get_service_status()
-        
-        # Testa conectividade
-        try:
-            test_response = await app_instances["llm_service"].generate_response(
-                "ping", "Responda apenas: pong"
-            )
-            status["connectivity_test"] = {
-                "success": True,
-                "response": test_response,
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            status["connectivity_test"] = {
-                "success": False,
-                "error": str(e)
-            }
-        
-        return status
-        
-    except Exception as e:
-        logger.error(f"LLM status error: {e}")
-        return {"status": "error", "error": str(e)}
-
-@app.post("/llm/test")
-async def test_llm(data: Dict[str, Any]):
-    """Testa LLM diretamente com resposta detalhada"""
-    try:
-        if not app_instances.get("llm_service"):
-            return {
-                "error": "LLM service not available",
-                "fallback_active": True
-            }
-        
-        prompt = data.get("prompt", "Olá")
-        system_message = data.get("system_message", "Você é um assistente de teste. Responda brevemente.")
-        
-        start_time = datetime.now()
-        
-        try:
-            response = await app_instances["llm_service"].generate_response(
-                prompt=prompt,
-                system_message=system_message
-            )
-            
-            elapsed = (datetime.now() - start_time).total_seconds()
-            
-            return {
-                "prompt": prompt,
-                "response": response,
-                "elapsed_seconds": elapsed,
-                "timestamp": datetime.now().isoformat(),
-                "llm_status": "online",
-                "model": app_instances["llm_service"].model
-            }
-            
-        except Exception as e:
-            # Usa fallback
-            fallback_response = app_instances["llm_service"]._get_fallback_response(prompt)
-            
-            return {
-                "prompt": prompt,
-                "response": fallback_response,
-                "error": str(e),
-                "fallback_used": True,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-    except Exception as e:
-        logger.error(f"LLM test error: {e}")
-        return {"error": str(e)}
-
-@app.get("/debug/test-webhook")
-async def test_webhook_debug():
-    """Endpoint de debug para testar o webhook"""
-    try:
-        # Simula uma mensagem de teste
-        test_message = WhatsAppMessage(
-            message_id="DEBUG_TEST_" + str(datetime.now().timestamp()),
-            from_number="+5511999999999",
-            to_number="+14155238886",
-            body="Teste de debug"
-        )
-        
-        if not app_instances.get("orchestrator"):
-            return {
-                "error": "Orchestrator not available",
-                "components": {
-                    "llm_service": app_instances.get("llm_service") is not None,
-                    "session_manager": app_instances.get("session_manager") is not None
-                }
-            }
-        
-        # Tenta processar
-        try:
-            response = await app_instances["orchestrator"].process_message(test_message)
-            
-            return {
-                "success": True,
-                "response": {
-                    "agent_id": response.agent_id,
-                    "text": response.response_text,
-                    "confidence": response.confidence,
-                    "metadata": response.metadata
-                },
-                "session_id": response.metadata.get("session_id"),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "traceback": traceback.format_exc()
-            }
-            
-    except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
-
-@app.post("/debug/test-session")
-async def test_session_creation():
-    """Testa criação de sessão"""
-    try:
-        if not app_instances.get("session_manager"):
-            return {"error": "Session manager not available"}
-        
-        phone = "+5511999999999"
-        session = await app_instances["session_manager"].get_or_create_session(phone)
-        
-        return {
-            "session_id": session.session_id,
-            "phone_number": session.phone_number,
-            "current_agent": session.current_agent,
-            "message_count": len(session.message_history),
-            "created_at": session.created_at.isoformat(),
-            "expires_at": session.expires_at.isoformat()
-        }
-        
-    except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
-
-@app.get("/debug/llm")
-async def debug_llm():
-    llm_service = app_instances.get("llm_service")
-    orchestrator = app_instances.get("orchestrator")
-    status = {
-        "llm_service": await llm_service.get_service_status() if llm_service else "not initialized",
-        "orchestrator": "initialized" if orchestrator else "not initialized"
-    }
-    return status
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
-        log_level="debug" if os.getenv("DEBUG", "False").lower() == "true" else "info"
-    )
+        return response

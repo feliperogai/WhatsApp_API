@@ -1,59 +1,21 @@
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: jarvis-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - jarvis-network
-
-  jarvis-whatsapp:
+  jarvis-simple:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: jarvis-whatsapp-llm
+    container_name: jarvis-whatsapp-simple
     ports:
       - "8000:8000"
     environment:
-      # Redis
-      - REDIS_URL=redis://redis:6379/0
-      # Python
       - PYTHONUNBUFFERED=1
-      # App
-      - ENVIRONMENT=production
-      - LOG_LEVEL=INFO
-      - DEBUG=False
+      - PORT=8000
     env_file:
       - .env
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s
       timeout: 10s
       retries: 3
     volumes:
       - ./logs:/app/logs
-      # Remova esta linha em produção (apenas para desenvolvimento)
-      # - ./app:/app/app
-    networks:
-      - jarvis-network
-
-volumes:
-  redis_data:
-    driver: local
-
-networks:
-  jarvis-network:
-    driver: bridge
