@@ -124,116 +124,26 @@ class SmartDataCollector:
         return None
 
 
-class LLMSmartReceptionAgent(LLMBaseAgent):
-    """Agente de recepção inteligente com coleta de dados integrada"""
-    
-    def __init__(self, llm_service: LLMService):
-        super().__init__(
-            agent_id="smart_reception_agent",
-            name="Alex - Assistente Inteligente",
-            description="Assistente que conversa naturalmente e coleta dados quando apropriado",
-            llm_service=llm_service
-        )
-        self.data_collector = SmartDataCollector()
-    
-    def _get_system_prompt(self) -> str:
-        return """Você é o Alex, assistente super amigável e inteligente da empresa.
-
-PERSONALIDADE:
-- Fale SEMPRE como uma pessoa real, natural e espontânea
-- Use linguagem do dia a dia, como no WhatsApp
-- Seja empático, prestativo e profissional quando necessário
-- Demonstre interesse genuíno pelo cliente
-
-COLETA DE DADOS NATURAL:
-- Se o cliente mencionar seu nome, empresa, email, etc., agradeça e use essas informações
-- NUNCA force a coleta de dados no início da conversa
-- Peça informações apenas quando for relevante para o contexto
-- Exemplo: Se vai enviar um relatório, aí sim pergunte o email
-
-SERVIÇOS DISPONÍVEIS:
-✅ Relatórios e análises de dados
-✅ Suporte técnico e resolução de problemas  
-✅ Agendamentos e reuniões
-✅ Informações sobre a empresa e serviços
-
-IMPORTANTE:
-- Priorize resolver o problema do cliente PRIMEIRO
-- Colete dados de forma natural durante a conversa
-- Se não souber algo, admita e ofereça alternativas
-- Mantenha o foco no que o cliente precisa"""
-    
-    async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
-        """Processa mensagem com coleta inteligente de dados"""
-        try:
-            # Extrai informações automaticamente do texto
-            extracted_info = self.data_collector.extract_client_info(
-                message.body or "", 
-                session.conversation_context
-            )
-            
-            # Atualiza dados do cliente se encontrou algo
-            if extracted_info:
-                if "cliente" not in session.conversation_context:
-                    session.conversation_context["cliente"] = {}
-                
-                session.conversation_context["cliente"].update(extracted_info)
-                logger.info(f"Dados extraídos automaticamente: {extracted_info}")
-            
-            # Incrementa contador de interações
-            session.conversation_context["interaction_count"] = session.conversation_context.get("interaction_count", 0) + 1
-            
-            # Processa mensagem normalmente
-            response = await super().process_message(message, session)
-            
-            # Verifica se deve pedir alguma informação (só em momentos apropriados)
-            missing_info = self.data_collector.should_ask_for_info(
-                session.conversation_context,
-                message.body or ""
-            )
-            
-            if missing_info and response.confidence > 0.7:  # Só pede se a conversa está fluindo bem
-                # Adiciona pedido sutil no final da resposta
-                info_request = self._create_natural_info_request(missing_info, session.conversation_context)
-                if info_request:
-                    response.response_text += f"\n\n{info_request}"
-                    session.conversation_context["last_info_request"] = session.conversation_context.get("interaction_count", 0)
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Erro no smart reception: {e}")
-            return super()._create_error_response(str(e))
-    
-    def _create_natural_info_request(self, missing_info: str, context: Dict[str, Any]) -> str:
-        """Cria pedido natural de informação baseado no contexto"""
-        cliente_nome = context.get("cliente", {}).get("nome", "").split()[0]
-        
-        requests = {
-            "nome completo": [
-                "Ah, ainda não me apresentei direito! Sou o Alex. E você, como se chama?",
-                "A propósito, qual é o seu nome? Assim posso te atender melhor!",
-                "Aliás, não peguei seu nome ainda. Pode me dizer?",
-            ],
-            "nome da empresa": [
-                f"Legal{', ' + cliente_nome if cliente_nome else ''}! E você trabalha em qual empresa?",
-                f"Ah{', ' + cliente_nome if cliente_nome else ''}, de qual empresa você é?",
-                "Por curiosidade, qual é a sua empresa? Assim posso personalizar melhor o atendimento!",
-            ],
-            "email de contato": [
-                f"Ótimo{', ' + cliente_nome if cliente_nome else ''}! Se precisar te enviar algo, qual email posso usar?",
-                "Caso eu precise enviar relatórios ou documentos, qual seu email?",
-                f"Ah{', ' + cliente_nome if cliente_nome else ''}, qual email você prefere para contato?",
-            ]
-        }
-        
-        import random
-        options = requests.get(missing_info, [])
-        return random.choice(options) if options else ""
-    
-    def _is_intent_compatible(self, intent: str) -> bool:
-        # Smart reception pode lidar com qualquer intent inicial
-        return True
+# class LLMSmartReceptionAgent(LLMBaseAgent):
+#     """Agente de recepção inteligente com coleta de dados integrada"""
+#     def __init__(self, llm_service: LLMService):
+#         super().__init__(
+#             agent_id="smart_reception_agent",
+#             name="Alex - Assistente Inteligente",
+#             description="Assistente que conversa naturalmente e coleta dados quando apropriado",
+#             llm_service=llm_service
+#         )
+#         self.data_collector = SmartDataCollector()
+#     def _get_system_prompt(self) -> str:
+#         return "(Prompt desabilitado para forçar fluxo do LLMReceptionAgent)"
+#     async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
+#         return AgentResponse(
+#             agent_id=self.agent_id,
+#             response_text="(Desabilitado)",
+#             confidence=0.0,
+#             should_continue=True,
+#             next_agent="reception_agent"
+#         )
 
 
 # Atualização do Orchestrator para usar o novo sistema

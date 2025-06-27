@@ -82,6 +82,11 @@ class LLMBaseAgent(BaseAgent):
                 context=context
             )
             
+            # NOVO: Garante resposta padrão se vier vazia
+            if not response_text or not response_text.strip():
+                logger.warning(f"[Agent {self.agent_id}] LLM retornou resposta vazia. Usando resposta padrão.")
+                response_text = "Desculpe, não consegui entender sua solicitação. Pode tentar reformular ou ser mais específico? 😊"
+            
             # Determina próximo agente
             next_agent = await self._determine_next_agent(response_text, session)
             
