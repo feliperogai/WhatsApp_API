@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 from langchain.tools import BaseTool, tool
 import random
 from datetime import datetime, timedelta
+import re
 
 from app.agents.llm_base_agent import LLMBaseAgent
 from app.models.message import WhatsAppMessage, AgentResponse
@@ -66,6 +67,141 @@ def get_performance_metrics() -> Dict[str, Any]:
         "last_backup": (datetime.now() - timedelta(hours=random.randint(1, 24))).strftime("%d/%m/%Y %H:%M")
     }
 
+class DataCollector:
+    """Coletor e validador de dados cadastrais para o DataAgent"""
+    @staticmethod
+    def extract_info(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        extracted = {}
+        text_lower = text.lower()
+        cliente = context.get("cliente", {})
+        # CNPJ
+        if not cliente.get("cnpj"):
+            cnpj_pattern = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14}'
+            cnpj_match = re.search(cnpj_pattern, text)
+            if cnpj_match:
+                extracted["cnpj"] = DataCollector.format_cnpj(cnpj_match.group())
+        # Nome da empresa
+        if not cliente.get("empresa"):
+            empresa_patterns = [
+                r'(?:empresa|trabalho na|sou da|represento a?)\s+([A-Za-zÀ-ÿ0-9\s&\-\.]+)',
+                r'(?:da|na)\s+([A-Z][A-Za-zÀ-ÿ0-9\s&\-\.]+(?:LTDA|ME|SA|S\.A\.|Ltd|Inc)?)',
+            ]
+            for pattern in empresa_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    empresa = match.group(1).strip()
+                    if len(empresa) > 2:
+                        extracted["empresa"] = empresa
+                        break
+        # Só coleta dados do usuário se CNPJ e empresa já estão válidos
+        temp_cliente = dict(cliente)
+        temp_cliente.update(extracted)
+        valids = DataCollector.validate_all(temp_cliente)
+        if valids["cnpj"] and valids["empresa"]:
+            # Nome do usuário
+            if not cliente.get("nome"):
+                name_patterns = [
+                    r'(?:meu nome é|me chamo|sou o?a?|aqui é o?a?)\s+([A-Za-zÀ-ÿ\s]+)',
+                    r'(?:é o?a?)\s+([A-Z][a-zà-ÿ]+(?:\s+[A-Z][a-zà-ÿ]+)*)\s*(?:,|\.)',
+                    r'^([A-Z][a-zà-ÿ]+(?:\s+[A-Z][a-zà-ÿ]+)*)\s*(?:,|\.|\!)',
+                ]
+                for pattern in name_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        nome = match.group(1).strip().title()
+                        if len(nome.split()) <= 5 and len(nome) > 2:
+                            extracted["nome"] = nome
+                            break
+            # Email
+            if not cliente.get("email"):
+                email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                email_match = re.search(email_pattern, text)
+                if email_match:
+                    extracted["email"] = email_match.group().lower()
+            # Cargo
+            if not cliente.get("cargo"):
+                cargo_pattern = r'(?:cargo|sou|trabalho como|minha função é)\s*:?
+*([A-Za-zÀ-ÿ\s]+)'
+                cargo_match = re.search(cargo_pattern, text, re.IGNORECASE)
+                if cargo_match:
+                    cargo = cargo_match.group(1).strip().title()
+                    if len(cargo) > 2 and len(cargo) < 40:
+                        extracted["cargo"] = cargo
+        return extracted
+
+    @staticmethod
+    def format_cnpj(cnpj: str) -> str:
+        numbers = re.sub(r'[^0-9]', '', cnpj)
+        if len(numbers) == 14:
+            return f"{numbers[:2]}.{numbers[2:5]}.{numbers[5:8]}/{numbers[8:12]}-{numbers[12:]}"
+        return cnpj
+
+    @staticmethod
+    def validate_all(cliente: Dict[str, Any]) -> Dict[str, bool]:
+        """Valida todos os campos necessários"""
+        def valid_cnpj(cnpj):
+            return bool(re.match(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cnpj))
+        def valid_email(email):
+            return bool(re.match(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$', email))
+        return {
+            "cnpj": valid_cnpj(cliente.get("cnpj", "")),
+            "empresa": bool(cliente.get("empresa")),
+            "nome": bool(cliente.get("nome")),
+            "email": valid_email(cliente.get("email", "")),
+            "cargo": bool(cliente.get("cargo")),
+        }
+
+    @staticmethod
+    def get_missing_or_invalid(cliente: Dict[str, Any]) -> list:
+        """Retorna a ordem dos campos faltantes ou inválidos, priorizando empresa antes do usuário"""
+        valids = DataCollector.validate_all(cliente)
+        missing = []
+        # Sempre prioriza empresa
+        if not valids["cnpj"]:
+            missing.append("CNPJ da empresa")
+        if not valids["empresa"]:
+            missing.append("nome da empresa")
+        # Só pede dados do usuário se empresa estiver completa
+        if valids["cnpj"] and valids["empresa"]:
+            if not valids["nome"]:
+                missing.append("seu nome")
+            if not valids["email"]:
+                missing.append("seu email")
+            if not valids["cargo"]:
+                missing.append("seu cargo")
+        return missing
+
+    @staticmethod
+    def natural_request(missing: str) -> str:
+        pedidos = {
+            "CNPJ da empresa": [
+                "Antes de mostrar os dados, preciso do CNPJ da empresa. Pode informar?",
+                "Qual o CNPJ da empresa, por favor?",
+                "Me passa o CNPJ da empresa para eu liberar os dados."
+            ],
+            "nome da empresa": [
+                "Qual o nome da empresa?",
+                "Preciso do nome da empresa para continuar. Pode informar?",
+                "Me diz o nome da empresa, por favor."
+            ],
+            "seu nome": [
+                "Agora preciso do seu nome. Como você se chama?",
+                "Qual o seu nome completo?",
+                "Me diz seu nome, por favor."
+            ],
+            "seu email": [
+                "Qual seu email de contato?",
+                "Me passa seu email, por favor.",
+                "Preciso do seu email para continuar."
+            ],
+            "seu cargo": [
+                "Qual o seu cargo na empresa?",
+                "Me diz seu cargo, por favor.",
+                "Para finalizar, qual o seu cargo?"
+            ]
+        }
+        return random.choice(pedidos.get(missing, [f"Por favor, informe: {missing}"]))
+
 class LLMDataAgent(LLMBaseAgent):
     def __init__(self, llm_service: LLMService):
         tools = [get_sales_data, get_dashboard_metrics, get_customer_analytics, get_performance_metrics]
@@ -76,6 +212,7 @@ class LLMDataAgent(LLMBaseAgent):
             llm_service=llm_service,
             tools=tools
         )
+        self.data_collector = DataCollector()
     
     def _get_system_prompt(self) -> str:
         return """Você é o Alex, agora mostrando dados e relatórios de forma empolgante!
@@ -103,6 +240,28 @@ Seja natural, prestativo e empolgado!"""
         return intent == "data_query"
     
     async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
+        # Coleta e valida dados cadastrais antes de responder
+        cliente = session.conversation_context.get("cliente", {})
+        # Extrai dados do texto
+        extracted = self.data_collector.extract_info(message.body or "", session.conversation_context)
+        if extracted:
+            if "cliente" not in session.conversation_context:
+                session.conversation_context["cliente"] = {}
+            session.conversation_context["cliente"].update(extracted)
+            cliente = session.conversation_context["cliente"]
+        # Valida e pede o que falta
+        missing = self.data_collector.get_missing_or_invalid(cliente)
+        if missing:
+            pedido = self.data_collector.natural_request(missing[0])
+            return AgentResponse(
+                agent_id=self.agent_id,
+                response_text=pedido,
+                confidence=0.8,
+                should_continue=True,
+                next_agent=self.agent_id,
+                metadata={"missing": missing}
+            )
+        
         # Identifica qual tipo de dados o usuário quer
         user_input = (message.body or "").lower()
         

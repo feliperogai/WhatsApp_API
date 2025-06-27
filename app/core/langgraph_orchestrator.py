@@ -380,7 +380,14 @@ class LangGraphOrchestrator:
             current_agent = state["current_agent"]
             intent = intent_analysis.get("intent", "")
             confidence = intent_analysis.get("confidence", 0.0)
-            if not current_agent or current_agent == "reception_agent":
+            user_input_lower = state["user_input"].lower()
+            # NOVO: Se intenção for dados, vá direto para o data_agent
+            if (
+                (intent == "data_query" and confidence > 0.5) or
+                any(word in user_input_lower for word in ["dados", "relatório", "relatorios", "kpi", "dashboard", "vendas"])
+            ):
+                state["routing_decision"] = "data"
+            elif not current_agent or current_agent == "reception_agent":
                 if confidence > 0.7:
                     if intent == "data_query":
                         state["routing_decision"] = "data"
@@ -391,7 +398,6 @@ class LangGraphOrchestrator:
                 else:
                     state["routing_decision"] = "classification"
             else:
-                user_input_lower = state["user_input"].lower()
                 if any(word in user_input_lower for word in ["menu", "voltar", "início"]):
                     state["routing_decision"] = "reception"
                 elif intent == "data_query" and current_agent != "data_agent":

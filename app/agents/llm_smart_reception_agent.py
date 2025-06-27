@@ -160,8 +160,11 @@ PERSONALIDADE:
 - Demonstre interesse genuíno pelo cliente
 
 COLETA DE DADOS NATURAL:
-- Se o cliente mencionar seu nome, empresa, email, etc., agradeça e use essas informações
-- NUNCA force a coleta de dados no início da conversa
+- Na PRIMEIRA interação, SEMPRE pergunte primeiro o nome da empresa, depois o CNPJ
+- Exemplo: 'Oi! Para começarmos, qual o nome da sua empresa?'
+- Depois: 'E qual o CNPJ da empresa?'
+- Só depois de empresa e CNPJ, pergunte o nome do usuário
+- NUNCA force a coleta de dados do usuário antes da empresa
 - NUNCA faça um questionário ou lista de perguntas
 - Peça informações apenas quando for relevante para o contexto
 - Exemplo: Se vai enviar um relatório, aí sim pergunte o email naturalmente
@@ -325,19 +328,25 @@ IMPORTANTE:
             )
     
     def _create_natural_info_request(self, missing_info: str, context: Dict[str, Any]) -> str:
-        """Cria pedido natural de informação baseado no contexto"""
+        """Cria pedido natural de informação baseado no contexto, priorizando empresa e CNPJ"""
         cliente_nome = context.get("cliente", {}).get("nome", "").split()[0]
-        
+        empresa = context.get("cliente", {}).get("empresa", "")
+        cnpj = context.get("cliente", {}).get("cnpj", "")
         requests = {
-            "nome completo": [
-                "Ah, ainda não sei seu nome! Como você se chama?",
-                "A propósito, qual é o seu nome? Assim posso te atender melhor!",
-                "Aliás, não peguei seu nome ainda. Pode me dizer?",
-            ],
             "nome da empresa": [
-                f"Legal{', ' + cliente_nome if cliente_nome else ''}! E você trabalha em qual empresa?",
-                f"Ah{', ' + cliente_nome if cliente_nome else ''}, de qual empresa você é?",
-                "Por curiosidade, qual é a sua empresa? Assim posso personalizar melhor!",
+                "Oi! Para começarmos, qual o nome da sua empresa?",
+                "Qual o nome da empresa, por favor?",
+                "Me diz o nome da empresa para eu te ajudar melhor."
+            ],
+            "CNPJ": [
+                f"Legal! Agora, qual o CNPJ da empresa?",
+                f"E qual o CNPJ da empresa {empresa if empresa else ''}?",
+                "Me passa o CNPJ da empresa, por favor."
+            ],
+            "nome completo": [
+                "Agora preciso do seu nome. Como você se chama?",
+                "Qual é o seu nome?",
+                "Me diz seu nome, por favor."
             ],
             "email de contato": [
                 f"Ótimo{', ' + cliente_nome if cliente_nome else ''}! Se precisar te enviar algo, qual email posso usar?",
@@ -345,9 +354,16 @@ IMPORTANTE:
                 f"Ah{', ' + cliente_nome if cliente_nome else ''}, qual email você prefere para contato?",
             ]
         }
-        
-        options = requests.get(missing_info, [])
-        return random.choice(options) if options else ""
+        # Decide qual pedir
+        if not empresa:
+            return random.choice(requests["nome da empresa"])
+        if not cnpj:
+            return random.choice(requests["CNPJ"])
+        if missing_info == "nome completo":
+            return random.choice(requests["nome completo"])
+        if missing_info == "email de contato":
+            return random.choice(requests["email de contato"])
+        return "Pode me informar: " + missing_info
     
     def _get_contextual_fallback(self, user_message: str, client_name: str = "") -> str:
         """Retorna resposta de fallback contextual"""

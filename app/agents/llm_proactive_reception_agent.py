@@ -122,14 +122,14 @@ PERSONALIDADE:
 - Seja caloroso e profissional
 
 COLETA DE DADOS PROATIVA:
-- Na PRIMEIRA interação, SEMPRE pergunte o nome da pessoa de forma natural
-- Exemplo: "Oi! Tudo bem? 😊 Sou o Alex, seu assistente virtual! Qual é o seu nome?"
-- Após saber o nome, pergunte a empresa de forma conversacional
-- Depois colete o email quando for relevante
+- Na PRIMEIRA interação, SEMPRE pergunte o CNPJ da empresa de forma natural
+- Exemplo: 'Oi! Tudo bem? 😊 Sou o Alex, seu assistente virtual! Para começarmos, qual o CNPJ da sua empresa?'
+- Após saber o CNPJ, pergunte o nome da empresa de forma conversacional
+- Depois colete o nome do usuário e o email quando for relevante
 
 IMPORTANTE:
 - Colete dados de forma natural e amigável
-- Use o nome da pessoa após descobrir
+- Use o nome da empresa e da pessoa após descobrir
 - Não faça parecer um formulário
 - Seja útil enquanto coleta informações"""
     
@@ -162,6 +162,50 @@ IMPORTANTE:
         """Processa mensagem com coleta proativa de dados"""
         try:
             logger.info(f"[ProactiveReception] Processando: {message.body}")
+            
+            # Detecta intenção de dados
+            user_text = (message.body or "").lower()
+            intent = None
+            if hasattr(self.llm_service, 'classify_intent'):
+                intent_result = await self.llm_service.classify_intent(message.body or "", session.session_id)
+                intent = intent_result.get("intent", "")
+            is_data_intent = (
+                (intent == "data_query") or
+                any(word in user_text for word in ["dados", "relatório", "relatorios", "kpi", "dashboard", "vendas"])
+            )
+            # Se intenção for dados, pedir CNPJ e nome da empresa primeiro
+            if is_data_intent:
+                cliente = session.conversation_context.get("cliente", {})
+                # Checa se já tem CNPJ e empresa
+                cnpj_ok = bool(cliente.get("cnpj"))
+                empresa_ok = bool(cliente.get("empresa"))
+                if not cnpj_ok:
+                    return AgentResponse(
+                        agent_id=self.agent_id,
+                        response_text="Para acessar os dados, preciso primeiro do CNPJ da empresa. Pode informar?",
+                        confidence=0.9,
+                        should_continue=True,
+                        next_agent=self.agent_id,
+                        metadata={"step": "cnpj"}
+                    )
+                if not empresa_ok:
+                    return AgentResponse(
+                        agent_id=self.agent_id,
+                        response_text="Agora me informe o nome da empresa, por favor.",
+                        confidence=0.9,
+                        should_continue=True,
+                        next_agent=self.agent_id,
+                        metadata={"step": "empresa"}
+                    )
+                # Se já tem ambos, pode seguir para o data_agent
+                return AgentResponse(
+                    agent_id=self.agent_id,
+                    response_text="Ótimo! Agora me diga seu nome, por favor.",
+                    confidence=0.9,
+                    should_continue=True,
+                    next_agent="data_agent",
+                    metadata={"step": "usuario"}
+                )
             
             # Extrai informações automaticamente
             extracted_info = self.data_collector.extract_client_info(
