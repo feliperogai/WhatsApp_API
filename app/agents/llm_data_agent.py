@@ -69,36 +69,41 @@ def get_performance_metrics() -> Dict[str, Any]:
 
 class DataCollector:
     """Coletor e validador de dados cadastrais para o DataAgent"""
+    
     @staticmethod
     def extract_info(text: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Extrai informações do texto com prioridade para dados da empresa"""
         extracted = {}
         text_lower = text.lower()
         cliente = context.get("cliente", {})
-        # CNPJ
+        
+        # PRIORIDADE 1: CNPJ (sempre primeiro)
         if not cliente.get("cnpj"):
-            cnpj_pattern = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14}'
+            cnpj_pattern = r'\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}|\d{14}'
             cnpj_match = re.search(cnpj_pattern, text)
             if cnpj_match:
                 extracted["cnpj"] = DataCollector.format_cnpj(cnpj_match.group())
-        # Nome da empresa
-        if not cliente.get("empresa"):
+        
+        # PRIORIDADE 2: Nome da empresa (só depois do CNPJ)
+        if cliente.get("cnpj") and not cliente.get("empresa"):
             empresa_patterns = [
                 r'(?:empresa|trabalho na|sou da|represento a?)\s+([A-Za-zÀ-ÿ0-9\s&\-\.]+)',
                 r'(?:da|na)\s+([A-Z][A-Za-zÀ-ÿ0-9\s&\-\.]+(?:LTDA|ME|SA|S\.A\.|Ltd|Inc)?)',
+                # Padrão mais genérico para capturar nomes de empresa
+                r'([A-Z][A-Za-zÀ-ÿ0-9\s&\-\.]{2,}(?:LTDA|ME|SA|S\.A\.|Ltd|Inc)?)'
             ]
             for pattern in empresa_patterns:
                 match = re.search(pattern, text, re.IGNORECASE)
                 if match:
                     empresa = match.group(1).strip()
-                    if len(empresa) > 2:
-                        extracted["empresa"] = empresa
+                    # Valida se parece ser nome de empresa
+                    if len(empresa) > 2 and not any(word in empresa.lower() for word in ["meu", "nome", "é", "sou"]):
+                        extracted["empresa"] = empresa.title()
                         break
-        # Só coleta dados do usuário se CNPJ e empresa já estão válidos
-        temp_cliente = dict(cliente)
-        temp_cliente.update(extracted)
-        valids = DataCollector.validate_all(temp_cliente)
-        if valids["cnpj"] and valids["empresa"]:
-            # Nome do usuário
+        
+        # Só extrai dados do usuário se CNPJ e empresa já estão válidos
+        if DataCollector._has_valid_company_data(dict(cliente, **extracted)):
+            # PRIORIDADE 3: Nome do usuário
             if not cliente.get("nome"):
                 name_patterns = [
                     r'(?:meu nome é|me chamo|sou o?a?|aqui é o?a?)\s+([A-Za-zÀ-ÿ\s]+)',
@@ -110,97 +115,182 @@ class DataCollector:
                     if match:
                         nome = match.group(1).strip().title()
                         if len(nome.split()) <= 5 and len(nome) > 2:
-                            extracted["nome"] = nome
-                            break
-            # Email
+                            if not any(word in nome.lower() for word in ["oi", "olá", "bom", "boa"]):
+                                extracted["nome"] = nome
+                                break
+            
+            # PRIORIDADE 4: Email
             if not cliente.get("email"):
                 email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
                 email_match = re.search(email_pattern, text)
                 if email_match:
                     extracted["email"] = email_match.group().lower()
-            # Cargo
+            
+            # PRIORIDADE 5: Cargo
             if not cliente.get("cargo"):
-                cargo_pattern = r'(?:cargo|sou|trabalho como|minha função é)\s*:?
-*([A-Za-zÀ-ÿ\s]+)'
-                cargo_match = re.search(cargo_pattern, text, re.IGNORECASE)
-                if cargo_match:
-                    cargo = cargo_match.group(1).strip().title()
-                    if len(cargo) > 2 and len(cargo) < 40:
-                        extracted["cargo"] = cargo
+                cargo_patterns = [
+                    r'(?:cargo|sou|trabalho como|minha função é|atuo como)\s*:?\s*([A-Za-zÀ-ÿ\s]+)',
+                    r'(?:diretor|gerente|analista|coordenador|supervisor|assistente|desenvolvedor|designer)(?:\s+[A-Za-zÀ-ÿ]+)*'
+                ]
+                for pattern in cargo_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        cargo = match.group(1) if match.groups() else match.group(0)
+                        cargo = cargo.strip().title()
+                        if len(cargo) > 2 and len(cargo) < 50:
+                            extracted["cargo"] = cargo
+                            break
+        
         return extracted
-
+    
     @staticmethod
     def format_cnpj(cnpj: str) -> str:
+        """Formata CNPJ para o padrão XX.XXX.XXX/XXXX-XX"""
         numbers = re.sub(r'[^0-9]', '', cnpj)
         if len(numbers) == 14:
             return f"{numbers[:2]}.{numbers[2:5]}.{numbers[5:8]}/{numbers[8:12]}-{numbers[12:]}"
         return cnpj
-
+    
+    @staticmethod
+    def validate_cnpj(cnpj: str) -> bool:
+        """Valida CNPJ com algoritmo completo"""
+        # Remove formatação
+        cnpj = re.sub(r'[^0-9]', '', cnpj)
+        
+        # Verifica se tem 14 dígitos
+        if len(cnpj) != 14:
+            return False
+        
+        # Verifica se não é sequência de números iguais
+        if cnpj == cnpj[0] * 14:
+            return False
+        
+        # Validação dos dígitos verificadores
+        # Primeiro dígito
+        soma = 0
+        peso = 5
+        for i in range(12):
+            soma += int(cnpj[i]) * peso
+            peso = peso - 1 if peso > 2 else 9
+        
+        digito1 = 11 - (soma % 11)
+        digito1 = 0 if digito1 > 9 else digito1
+        
+        if int(cnpj[12]) != digito1:
+            return False
+        
+        # Segundo dígito
+        soma = 0
+        peso = 6
+        for i in range(13):
+            soma += int(cnpj[i]) * peso
+            peso = peso - 1 if peso > 2 else 9
+        
+        digito2 = 11 - (soma % 11)
+        digito2 = 0 if digito2 > 9 else digito2
+        
+        return int(cnpj[13]) == digito2
+    
+    @staticmethod
+    def validate_email(email: str) -> bool:
+        """Valida formato de email"""
+        pattern = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+        return bool(re.match(pattern, email))
+    
     @staticmethod
     def validate_all(cliente: Dict[str, Any]) -> Dict[str, bool]:
         """Valida todos os campos necessários"""
-        def valid_cnpj(cnpj):
-            return bool(re.match(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cnpj))
-        def valid_email(email):
-            return bool(re.match(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$', email))
         return {
-            "cnpj": valid_cnpj(cliente.get("cnpj", "")),
-            "empresa": bool(cliente.get("empresa")),
-            "nome": bool(cliente.get("nome")),
-            "email": valid_email(cliente.get("email", "")),
-            "cargo": bool(cliente.get("cargo")),
+            "cnpj": DataCollector.validate_cnpj(cliente.get("cnpj", "")),
+            "empresa": bool(cliente.get("empresa") and len(cliente.get("empresa", "")) > 2),
+            "nome": bool(cliente.get("nome") and len(cliente.get("nome", "")) > 2),
+            "email": DataCollector.validate_email(cliente.get("email", "")),
+            "cargo": bool(cliente.get("cargo") and len(cliente.get("cargo", "")) > 2),
         }
-
+    
+    @staticmethod
+    def _has_valid_company_data(cliente: Dict[str, Any]) -> bool:
+        """Verifica se os dados da empresa estão válidos"""
+        valids = DataCollector.validate_all(cliente)
+        return valids["cnpj"] and valids["empresa"]
+    
     @staticmethod
     def get_missing_or_invalid(cliente: Dict[str, Any]) -> list:
-        """Retorna a ordem dos campos faltantes ou inválidos, priorizando empresa antes do usuário"""
+        """Retorna campos faltantes ou inválidos, priorizando empresa"""
         valids = DataCollector.validate_all(cliente)
         missing = []
-        # Sempre prioriza empresa
+        
+        # SEMPRE prioriza dados da empresa
         if not valids["cnpj"]:
             missing.append("CNPJ da empresa")
         if not valids["empresa"]:
             missing.append("nome da empresa")
-        # Só pede dados do usuário se empresa estiver completa
+        
+        # Só pede dados do usuário se empresa estiver completa e válida
         if valids["cnpj"] and valids["empresa"]:
             if not valids["nome"]:
-                missing.append("seu nome")
+                missing.append("seu nome completo")
             if not valids["email"]:
                 missing.append("seu email")
             if not valids["cargo"]:
-                missing.append("seu cargo")
+                missing.append("seu cargo na empresa")
+        
         return missing
-
+    
     @staticmethod
     def natural_request(missing: str) -> str:
+        """Gera pedido natural para informação faltante"""
         pedidos = {
             "CNPJ da empresa": [
-                "Antes de mostrar os dados, preciso do CNPJ da empresa. Pode informar?",
-                "Qual o CNPJ da empresa, por favor?",
-                "Me passa o CNPJ da empresa para eu liberar os dados."
+                "📋 Antes de mostrar os dados, preciso do CNPJ da empresa. Pode informar?",
+                "Para liberar o acesso aos dados, qual o CNPJ da empresa?",
+                "Primeiro, me passa o CNPJ da empresa, por favor.",
+                "Preciso validar o CNPJ da empresa. Qual é?"
             ],
             "nome da empresa": [
-                "Qual o nome da empresa?",
-                "Preciso do nome da empresa para continuar. Pode informar?",
-                "Me diz o nome da empresa, por favor."
+                "Agora, qual o nome da empresa?",
+                "Ótimo! Agora me diz o nome da empresa.",
+                "Perfeito! Qual é o nome da empresa?",
+                "Legal! E o nome da empresa é...?"
             ],
-            "seu nome": [
-                "Agora preciso do seu nome. Como você se chama?",
-                "Qual o seu nome completo?",
-                "Me diz seu nome, por favor."
+            "seu nome completo": [
+                "Excelente! Agora preciso do seu nome completo.",
+                "Ótimo! Como você se chama? (nome completo)",
+                "Perfeito! Qual o seu nome completo?",
+                "Show! Me diz seu nome completo, por favor."
             ],
             "seu email": [
-                "Qual seu email de contato?",
-                "Me passa seu email, por favor.",
-                "Preciso do seu email para continuar."
+                "Qual seu email corporativo?",
+                "Me passa seu email de trabalho, por favor.",
+                "Preciso do seu email para enviar os relatórios. Qual é?",
+                "E seu email profissional?"
             ],
-            "seu cargo": [
-                "Qual o seu cargo na empresa?",
-                "Me diz seu cargo, por favor.",
-                "Para finalizar, qual o seu cargo?"
+            "seu cargo na empresa": [
+                "Para finalizar, qual o seu cargo na empresa?",
+                "Último dado: qual sua função/cargo?",
+                "E qual cargo você ocupa na empresa?",
+                "Por fim, me diz seu cargo, por favor."
             ]
         }
         return random.choice(pedidos.get(missing, [f"Por favor, informe: {missing}"]))
+    
+    @staticmethod
+    def get_validation_feedback(field: str, value: str) -> Optional[str]:
+        """Retorna feedback de validação específico"""
+        if field == "cnpj":
+            if not DataCollector.validate_cnpj(value):
+                return "❌ CNPJ inválido. Por favor, verifique os dígitos e tente novamente."
+        elif field == "email":
+            if not DataCollector.validate_email(value):
+                return "❌ Email inválido. Use o formato: nome@empresa.com"
+        elif field == "empresa":
+            if len(value) < 3:
+                return "❌ Nome da empresa muito curto. Digite o nome completo."
+        elif field == "nome":
+            if len(value.split()) < 2:
+                return "⚠️ Por favor, informe seu nome completo (nome e sobrenome)."
+        
+        return None
 
 class LLMDataAgent(LLMBaseAgent):
     def __init__(self, llm_service: LLMService):
@@ -215,23 +305,30 @@ class LLMDataAgent(LLMBaseAgent):
         self.data_collector = DataCollector()
     
     def _get_system_prompt(self) -> str:
-        return """Você é o Alex, agora mostrando dados e relatórios de forma empolgante!
+        return """Você é o Alex, especialista em dados e relatórios empresariais!
 
 PERSONALIDADE:
 - Fale naturalmente, como uma pessoa
-- Seja didático, mas não robótico
-- Use linguagem simples e clara
+- Seja profissional mas amigável
+- Use linguagem clara e direta
 
-QUANDO RESPONDER:
-- Se a pessoa pedir dados, relatórios, dashboards, KPIs, etc.
-- Se não tiver certeza, pergunte mais detalhes
+PROCESSO DE COLETA DE DADOS:
+1. SEMPRE colete primeiro os dados da EMPRESA:
+   - CNPJ (validar formato XX.XXX.XXX/XXXX-XX)
+   - Nome da empresa
+2. SOMENTE depois de ter CNPJ e nome da empresa válidos, colete dados do USUÁRIO:
+   - Nome completo
+   - Email corporativo
+   - Cargo
 
 IMPORTANTE:
-- NUNCA mencione "dados internos" ou "API"
-- Apenas mostre as informações de forma útil
-- Se não entender, pergunte: "Pode detalhar melhor o que você quer ver?"
+- NUNCA mostre dados sem ter CNPJ e empresa validados
+- Valide CNPJ antes de aceitar
+- Se CNPJ inválido, peça novamente explicando o erro
+- Seja firme mas educado ao solicitar os dados
+- Use emojis apropriados (📋, ✅, ❌, 📊)
 
-Seja natural, prestativo e empolgado!"""
+Após coletar todos os dados, mostre relatórios de forma empolgante e profissional!"""
     
     def _get_tools(self) -> List[BaseTool]:
         return [get_sales_data, get_dashboard_metrics, get_customer_analytics, get_performance_metrics]
@@ -240,28 +337,64 @@ Seja natural, prestativo e empolgado!"""
         return intent == "data_query"
     
     async def process_message(self, message: WhatsAppMessage, session: UserSession) -> AgentResponse:
-        # Coleta e valida dados cadastrais antes de responder
+        # Obtém dados do cliente
         cliente = session.conversation_context.get("cliente", {})
-        # Extrai dados do texto
+        
+        # Extrai novos dados do texto
         extracted = self.data_collector.extract_info(message.body or "", session.conversation_context)
+        
+        # Atualiza dados do cliente se houver novos
         if extracted:
             if "cliente" not in session.conversation_context:
                 session.conversation_context["cliente"] = {}
-            session.conversation_context["cliente"].update(extracted)
+            
+            # Valida dados extraídos antes de salvar
+            for field, value in extracted.items():
+                feedback = self.data_collector.get_validation_feedback(field, value)
+                if feedback:
+                    return AgentResponse(
+                        agent_id=self.agent_id,
+                        response_text=feedback,
+                        confidence=0.9,
+                        should_continue=True,
+                        next_agent=self.agent_id,
+                        metadata={"validation_error": field}
+                    )
+                else:
+                    session.conversation_context["cliente"][field] = value
+            
             cliente = session.conversation_context["cliente"]
-        # Valida e pede o que falta
+        
+        # Verifica o que está faltando ou inválido
         missing = self.data_collector.get_missing_or_invalid(cliente)
+        
         if missing:
+            # Gera pedido natural para o próximo campo
             pedido = self.data_collector.natural_request(missing[0])
+            
+            # Se já tem alguns dados, menciona o progresso
+            if cliente:
+                collected = []
+                if cliente.get("cnpj"):
+                    collected.append(f"CNPJ: {cliente['cnpj']} ✅")
+                if cliente.get("empresa"):
+                    collected.append(f"Empresa: {cliente['empresa']} ✅")
+                if cliente.get("nome"):
+                    collected.append(f"Nome: {cliente['nome']} ✅")
+                
+                if collected:
+                    pedido = f"Ótimo! Já tenho:\n" + "\n".join(collected) + f"\n\n{pedido}"
+            
             return AgentResponse(
                 agent_id=self.agent_id,
                 response_text=pedido,
-                confidence=0.8,
+                confidence=0.9,
                 should_continue=True,
                 next_agent=self.agent_id,
-                metadata={"missing": missing}
+                metadata={"missing_fields": missing, "collected": cliente}
             )
         
+        # Se chegou aqui, tem todos os dados válidos!
         # Identifica qual tipo de dados o usuário quer
         user_input = (message.body or "").lower()
         
@@ -269,7 +402,7 @@ Seja natural, prestativo e empolgado!"""
         query_type = "general"
         if any(word in user_input for word in ["vendas", "receita", "faturamento"]):
             query_type = "sales"
-        elif any(word in user_input for word in ["dashboard", "resumo", "kpi"]):
+        elif any(word in user_input for word in ["dashboard", "resumo", "kpi", "geral"]):
             query_type = "dashboard"
         elif any(word in user_input for word in ["clientes", "customers", "usuários"]):
             query_type = "customers"
@@ -279,8 +412,11 @@ Seja natural, prestativo e empolgado!"""
         additional_context = {
             "query_type": query_type,
             "user_message": message.body,
-            "available_data_sources": ["sales", "dashboard", "customers", "performance"],
-            "tools_available": [type(tool).__name__ for tool in self._get_tools()]
+            "cliente_validado": cliente,
+            "empresa": cliente.get("empresa"),
+            "user_name": cliente.get("nome"),
+            "cargo": cliente.get("cargo", ""),
+            "available_data_sources": ["sales", "dashboard", "customers", "performance"]
         }
         
         # Adiciona dados relevantes baseado no tipo de consulta
@@ -293,32 +429,41 @@ Seja natural, prestativo e empolgado!"""
         elif query_type == "performance":
             additional_context["performance_data"] = get_performance_metrics.invoke({})
         else:
-            # Para consultas gerais, inclui resumo de tudo
+            # Para consultas gerais, inclui resumo
             additional_context["summary_data"] = {
                 "sales": get_sales_data.invoke({}),
-                "dashboard": get_dashboard_metrics.invoke({}),
-                "customers": get_customer_analytics.invoke({}),
-                "performance": get_performance_metrics.invoke({})
+                "dashboard": get_dashboard_metrics.invoke({})
             }
         
         # Atualiza contexto da sessão
         session.update_context("query_type", query_type)
         session.update_context("last_data_request", datetime.now().isoformat())
+        session.update_context("data_access_granted", True)
+        
+        # Adiciona header personalizado ao prompt
+        nome_usuario = cliente.get("nome", "").split()[0]
+        custom_prompt = self._get_system_prompt() + f"\n\nDados validados para {cliente.get('empresa')}. Usuário: {nome_usuario} ({cliente.get('cargo', 'Colaborador')})"
         
         # Processa com contexto específico
         response = await super().process_message(message, session)
         
-        # Verifica se usuário quer sair ou fazer nova consulta
-        response_text = response.response_text.lower()
+        # Adiciona saudação personalizada se for primeira consulta após validação
+        if session.conversation_context.get("first_data_access", True):
+            prefix = f"🎉 Parabéns {nome_usuario}! Acesso liberado para {cliente['empresa']}!\n\n"
+            response.response_text = prefix + response.response_text
+            session.conversation_context["first_data_access"] = False
+        
+        # Verifica redirecionamento
         if any(word in user_input for word in ["sair", "voltar", "menu", "principal"]):
             response.next_agent = "reception_agent"
-        elif any(word in user_input for word in ["outro", "nova", "diferente"]):
-            response.next_agent = self.agent_id  # Continua no data agent
+        elif any(word in user_input for word in ["outro", "nova", "diferente", "mais"]):
+            response.next_agent = self.agent_id
         
-        # Adiciona metadados específicos
+        # Adiciona metadados
         response.metadata.update({
             "query_type": query_type,
-            "data_sources_used": additional_context.get("tools_available", []),
+            "data_validated": True,
+            "client_data": cliente,
             "timestamp": datetime.now().isoformat()
         })
         
